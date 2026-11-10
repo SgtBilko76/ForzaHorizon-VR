@@ -818,6 +818,10 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
                   else directory / "fidelityfx-vk" / "ffx-api") / FIDELITYFX_LIBRARY
     if fidelityfx.is_file():
         libraries.append(fidelityfx)
+    # Meta Quest VR host (src/quest): the Khronos OpenXR loader libmain links.
+    openxr_loader = ROOT / "thirdparty" / "openxr" / "lib" / CONFIG["abi"] / "libopenxr_loader.so"
+    if openxr_loader.is_file():
+        libraries.append(openxr_loader)
     libraries.append(tools.libcxx)
 
     staging = WORK / "package"

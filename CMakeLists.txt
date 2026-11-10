@@ -456,6 +456,22 @@ else()
     target_link_libraries(pinyon_shift PRIVATE Threads::Threads ${CMAKE_DL_LIBS} rex::gpu-fh1)
 endif()
 
+# Meta Quest VR host (src/quest): an OpenXR session shows the game on a
+# curved screen; the Khronos loader ships beside libmain
+# (tools/pinyon_android.py packages it from thirdparty/openxr).
+option(PINYON_SHIFT_QUEST_VR "Build the Meta Quest OpenXR host into the Android app" ON)
+if(ANDROID AND PINYON_SHIFT_QUEST_VR AND TARGET pinyon_shift)
+    target_sources(pinyon_shift PRIVATE src/quest/quest_vr.cpp)
+    target_compile_definitions(pinyon_shift PRIVATE PINYON_SHIFT_QUEST_VR=1)
+    target_include_directories(pinyon_shift PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openxr/include)
+    add_library(pinyon_openxr_loader SHARED IMPORTED)
+    set_target_properties(pinyon_openxr_loader PROPERTIES IMPORTED_LOCATION
+        ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openxr/lib/${ANDROID_ABI}/libopenxr_loader.so
+        IMPORTED_NO_SONAME TRUE)
+    target_link_libraries(pinyon_shift PRIVATE pinyon_openxr_loader EGL GLESv3 android log)
+endif()
+
 # The mod ABI header (NP-7) and the TOML parser mod.toml is read with.
 target_include_directories(pinyon_shift PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -1,0 +1,57 @@
+diff --git a/include/rex/ui/surface_android.h b/include/rex/ui/surface_android.h
+index d70e7b8..fc00cae 100644
+--- a/include/rex/ui/surface_android.h
++++ b/include/rex/ui/surface_android.h
+@@ -34,5 +34,12 @@ class AndroidNativeWindowSurface final : public Surface {
+   ANativeWindow* window_;
+ };
+ 
++// A window to present into instead of the activity's (a VR runtime's
++// surface swapchain, for example). The provider is asked each time a
++// surface is created; nullptr falls back to the activity's window.
++using AndroidSurfaceProvider = ANativeWindow* (*)();
++void SetAndroidSurfaceProvider(AndroidSurfaceProvider provider);
++AndroidSurfaceProvider GetAndroidSurfaceProvider();
++
+ }  // namespace ui
+ }  // namespace rex
+\ No newline at end of file
+diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
+index cd976ce..6f94ea3 100644
+--- a/src/ui/surface_android.cpp
++++ b/src/ui/surface_android.cpp
+@@ -16,6 +16,18 @@
+ namespace rex {
+ namespace ui {
+ 
++namespace {
++AndroidSurfaceProvider g_surface_provider = nullptr;
++}  // namespace
++
++void SetAndroidSurfaceProvider(AndroidSurfaceProvider provider) {
++  g_surface_provider = provider;
++}
++
++AndroidSurfaceProvider GetAndroidSurfaceProvider() {
++  return g_surface_provider;
++}
++
+ bool AndroidNativeWindowSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
+   if (!window_) {
+     return false;
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index 4aa0d2d..e2121fb 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -534,6 +534,11 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+ #elif REX_PLATFORM_ANDROID
+   SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
+   if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
++    if (const AndroidSurfaceProvider provider = GetAndroidSurfaceProvider()) {
++      if (ANativeWindow* provided = provider()) {
++        return std::make_unique<AndroidNativeWindowSurface>(provided);
++      }
++    }
+     auto* native_window = static_cast<ANativeWindow*>(
+         SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
+     if (native_window) {

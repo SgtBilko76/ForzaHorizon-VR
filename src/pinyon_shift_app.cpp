@@ -78,6 +78,9 @@
 #include "ui/xam_dialogs.h"
 #include "ui/settings_menu.h"
 #include "ui/touch_pad.h"
+#if defined(PINYON_SHIFT_QUEST_VR)
+#include "quest/quest_vr.h"
+#endif
 #include "ui/music.h"
 
 #include <cstdio>
@@ -969,6 +972,11 @@ void PinyonShiftApp::OnPreSetup(rex::RuntimeConfig& config) {
 }
 
 bool PinyonShiftApp::SetupPresentation() {
+#if defined(PINYON_SHIFT_QUEST_VR)
+  // Before the presenter asks for its window: it presents into the XR
+  // session's surface (src/quest/quest_vr.h).
+  pinyon_shift::quest::Start();
+#endif
   if (ReXApp::SetupPresentation()) {
     // Self-test of the GPU-loss report, like PINYON_SHIFT_CRASH_SELF_TEST.
     if (pinyon_shift::platform::EnvironmentFlag("PINYON_SHIFT_GPU_LOSS_SELF_TEST")) {
