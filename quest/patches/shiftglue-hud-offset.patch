@@ -1,0 +1,76 @@
+diff --git a/include/rex/graphics/hud_offset.h b/include/rex/graphics/hud_offset.h
+new file mode 100644
+index 0000000..ca202a1
+--- /dev/null
++++ b/include/rex/graphics/hud_offset.h
+@@ -0,0 +1,19 @@
++#pragma once
++/**
++ * @file        graphics/hud_offset.h
++ * @brief       A host-set shift of FH1's HUD draws (VR: keep the HUD fixed
++ *              in the driving direction while the camera turns with the head)
++ */
++
++namespace rex::graphics {
++
++// Added to the HUD draws' normalized device coordinates (x right, y down,
++// -1..1 across the target) after the HUD scale. 0, 0 leaves the HUD alone.
++// Exported from the GPU plugin, which builds with hidden visibility.
++#if defined(_WIN32)
++void SetHudOffset(float x, float y);
++#else
++__attribute__((visibility("default"))) void SetHudOffset(float x, float y);
++#endif
++
++}  // namespace rex::graphics
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index fc0ab77..7fc18bf 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <cmath>
+ #include <cstdint>
+ #include <cstdlib>
+@@ -207,6 +208,20 @@ REXCVAR_DEFINE_DOUBLE(fh1_hud_squeeze, 1.0, "GPU",
+     .range(1.0, 4.0)
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ #endif
++#include <rex/graphics/hud_offset.h>
++
++namespace {
++std::atomic<float> g_hud_offset_x{0.0f};
++std::atomic<float> g_hud_offset_y{0.0f};
++}  // namespace
++
++namespace rex::graphics {
++void SetHudOffset(float x, float y) {
++  g_hud_offset_x.store(x, std::memory_order_relaxed);
++  g_hud_offset_y.store(y, std::memory_order_relaxed);
++}
++}  // namespace rex::graphics
++
+ REXCVAR_DEFINE_DOUBLE(fh1_hud_scale, 1.0, "GPU",
+                       "Vulkan: scale of FH1's HUD around the screen centre, over a game world "
+                       "(menus without one keep their size)")
+@@ -6999,6 +7014,17 @@ bool VulkanCommandProcessor::IssueDrawImpl(xenos::PrimitiveType prim_type, uint3
+   }
+   // Recorded before the jitter, which is the frame's.
+   const draw_util::ViewportInfo program_viewport = viewport_info;
++  // The host's HUD shift (graphics/hud_offset.h), per frame like the jitter,
++  // so recorded programs stay valid.
++  {
++    const float hud_x = g_hud_offset_x.load(std::memory_order_relaxed);
++    const float hud_y = g_hud_offset_y.load(std::memory_order_relaxed);
++    if ((hud_x != 0.0f || hud_y != 0.0f) && fh1_native_executor_ &&
++        fh1_native_executor_->IsHudDraw() && !REXCVAR_GET(fh1_hud_scale_suspended)) {
++      viewport_info.ndc_offset[0] += hud_x;
++      viewport_info.ndc_offset[1] += hud_y;
++    }
++  }
+   // UP-1.5: a temporal upscaler's sub-pixel jitter, on the scene's draws
+   // only (a host pixel is 2 / extent in NDC).
+   float jitter_x, jitter_y;

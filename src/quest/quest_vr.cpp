@@ -19,6 +19,7 @@
 
 #include <SDL3/SDL.h>
 #include <rex/cvar.h>
+#include <rex/graphics/hud_offset.h>
 #include <rex/perf/counter.h>
 #include <rex/ui/surface_android.h>
 
@@ -81,7 +82,14 @@ using CreateSurfaceSwapchainFn = XrResult(XRAPI_PTR*)(XrSession, const XrSwapcha
 // be shown where the head was when it was drawn (a quad that the compositor
 // keeps fixed in the room while the head moves on).
 constexpr float kDegrees = 57.2957795f;
-constexpr float kVrVerticalFovDeg = 70.0f;  // debug.fhvr.vfov; 16:9 -> ~102 deg wide
+// debug.fhvr.vfov. Owner's pick 2026-11-11 on Turnip with coarse shading:
+// 62 deg (~93 wide) ran 42-44 fps where 70 ran 26-27 at the same spot.
+constexpr float kVrVerticalFovDeg = 62.0f;
+// The HUD sits in the frame's corners, outside the headset's view at this
+// width: in the head view it moves in by a 20 % margin and shrinks to 85 %
+// (owner's pick, live); the curved screen keeps the game's own layout.
+constexpr const char* kVrHudSafeZone = "0.2";
+constexpr const char* kVrHudScale = "0.85";
 constexpr float kQuadDistanceM = 10.0f;     // mono picture: far, so the eyes rest
 constexpr int kShownLagFrames = 2;          // debug.fhvr.lagframes
 constexpr float kPoseLeadMs = 33.0f;        // debug.fhvr.lead
@@ -117,6 +125,29 @@ int64_t GuestFrames() {
   return rex::perf::GetTotalCounter(rex::perf::CounterId::kSourceFrameCount);
 }
 
+// The HUD fixed in the driving direction: each frame's HUD draws move by
+// where the seat's forward direction lands in that frame's head-turned view
+// (look right: the HUD slides left). debug.fhvr.hudlock 0 turns it off,
+// debug.fhvr.hudy -1 flips the vertical direction.
+std::atomic<float> g_vr_tan_half_y{0.0f};
+std::atomic<bool> g_hud_lock_on{true};
+std::atomic<float> g_hud_y_sign{1.0f};
+
+void UpdateHudLock(const head_tracking::Pose& pose) {
+  const float tan_y = g_vr_tan_half_y.load(std::memory_order_relaxed);
+  if (!g_hud_lock_on.load(std::memory_order_relaxed) || tan_y <= 0.0f) {
+    rex::graphics::SetHudOffset(0.0f, 0.0f);
+    return;
+  }
+  const float tan_x = tan_y * float(kSurfaceWidth) / float(kSurfaceHeight);
+  const float yaw = pose[head_tracking::kYaw] / kDegrees;
+  const float pitch = pose[head_tracking::kPitch] / kDegrees;
+  const float x = std::clamp(-std::tan(std::clamp(yaw, -1.4f, 1.4f)) / tan_x, -4.0f, 4.0f);
+  const float y = std::clamp(std::tan(std::clamp(pitch, -1.4f, 1.4f)) / tan_y, -4.0f, 4.0f) *
+                  g_hud_y_sign.load(std::memory_order_relaxed);
+  rex::graphics::SetHudOffset(x, y);
+}
+
 // head_tracking's source, on the game's thread: one pose per game frame.
 bool ReadHeadPose(head_tracking::Pose* out) {
   std::lock_guard lock(g_head.mutex);
@@ -127,6 +158,7 @@ bool ReadHeadPose(head_tracking::Pose* out) {
     g_head.frame_pose = g_head.latest;
     g_head.samples.push_back({frame, g_head.latest_local});
     while (g_head.samples.size() > 64) g_head.samples.pop_front();
+    UpdateHudLock(g_head.frame_pose);
   }
   g_head.last_read = std::chrono::steady_clock::now();
   *out = g_head.frame_pose;
@@ -779,8 +811,25 @@ class QuestXr {
       // view is up, so chase cameras and menus keep the game's own.
       const float vfov = std::clamp(PropertyFloat("debug.fhvr.vfov", kVrVerticalFovDeg), 30.0f, 120.0f);
       head_tracking::SetFieldOfViewOverride(head_view ? vfov / kDegrees : 0.0f);
+      g_vr_tan_half_y.store(head_view ? std::tan(vfov * 0.5f / kDegrees) : 0.0f,
+                            std::memory_order_relaxed);
+      g_hud_lock_on.store(PropertyFloat("debug.fhvr.hudlock", 1.0f) != 0.0f,
+                          std::memory_order_relaxed);
+      g_hud_y_sign.store(PropertyFloat("debug.fhvr.hudy", 1.0f) < 0.0f ? -1.0f : 1.0f,
+                         std::memory_order_relaxed);
+      if (!head_view) rex::graphics::SetHudOffset(0.0f, 0.0f);
       if (head_view != head_view_shown_) {
         head_view_shown_ = head_view;
+        if (head_view) {
+          screen_hud_safe_zone_ = rex::cvar::GetFlagByName("fh1_hud_safe_zone");
+          screen_hud_scale_ = rex::cvar::GetFlagByName("fh1_hud_scale");
+          rex::cvar::SetFlagByName("fh1_hud_safe_zone", kVrHudSafeZone);
+          rex::cvar::SetFlagByName("fh1_hud_scale", kVrHudScale);
+        } else {
+          if (!screen_hud_safe_zone_.empty())
+            rex::cvar::SetFlagByName("fh1_hud_safe_zone", screen_hud_safe_zone_);
+          if (!screen_hud_scale_.empty()) rex::cvar::SetFlagByName("fh1_hud_scale", screen_hud_scale_);
+        }
         VR_LOG("view: %s", head_view ? "head-tracked (cockpit/hood camera)" : "curved screen");
       }
       if (head_view && ++head_log_ % 720 == 0)
@@ -862,6 +911,7 @@ class QuestXr {
   XrTime first_place_ = 0;
   XrPosef screen_pose_{{0, 0, 0, 1}, {0, 0, 0}}, flat_pose_{{0, 0, 0, 1}, {0, 0, 0}};
   bool head_view_shown_ = false;
+  std::string screen_hud_safe_zone_, screen_hud_scale_;
   uint32_t tuning_tick_ = 0;
   std::string last_cvar_;
   std::chrono::steady_clock::time_point perf_since_{};
@@ -882,6 +932,12 @@ void Start() {
   // kept running (Quest 3, 2026-11-11); FIFO hands every frame over.
   rex::cvar::SetFlagByName("vulkan_allow_present_mode_mailbox", "false");
   rex::cvar::SetFlagByName("vulkan_allow_present_mode_immediate", "false");
+  // Shaded once per 2x2 pixels in the scene and shadow mask (the game's own
+  // SCENE SHADING COARSE): owner-approved in the headset, 24-29 -> 34-41 fps
+  // in the cockpit on Turnip.
+  rex::cvar::SetFlagByName("fh1_coarse_shading",
+                           "1024/32/4x/d1+0/32/4x/c3=2x2,0/16/1x/d1+720/16/1x/c0=2x2");
+  rex::cvar::SetFlagByName("fh1_coarse_shading_alpha_test", "true");
   // The headset drives the cockpit and hood cameras (head-tracked view).
   head_tracking::SetPoseSource(ReadHeadPose);
   rex::cvar::SetFlagByName("head_tracking", "true");
