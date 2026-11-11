@@ -18,6 +18,7 @@
 #include <openxr/openxr_platform.h>
 
 #include <SDL3/SDL.h>
+#include <rex/cvar.h>
 #include <rex/ui/surface_android.h>
 
 #include <algorithm>
@@ -681,6 +682,10 @@ void Start() {
   if (g_started.exchange(true)) return;
   // The presenter asks for its window here (shiftglue-sdk window_sdl.cpp).
   rex::ui::SetAndroidSurfaceProvider([]() { return WaitForSurface(30000); });
+  // Mailbox presents into the XR surface froze the screen while the game
+  // kept running (Quest 3, 2026-11-11); FIFO hands every frame over.
+  rex::cvar::SetFlagByName("vulkan_allow_present_mode_mailbox", "false");
+  rex::cvar::SetFlagByName("vulkan_allow_present_mode_immediate", "false");
   auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
   auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
   JavaVM* vm = nullptr;
