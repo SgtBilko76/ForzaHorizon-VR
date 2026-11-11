@@ -106,8 +106,13 @@ class VirtualPad {
     SDL_SetJoystickVirtualAxis(joystick_, SDL_GAMEPAD_AXIS_LEFTY, axis(-s.ly));
     SDL_SetJoystickVirtualAxis(joystick_, SDL_GAMEPAD_AXIS_RIGHTX, axis(s.rx));
     SDL_SetJoystickVirtualAxis(joystick_, SDL_GAMEPAD_AXIS_RIGHTY, axis(-s.ry));
-    SDL_SetJoystickVirtualAxis(joystick_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, axis(s.lt));
-    SDL_SetJoystickVirtualAxis(joystick_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, axis(s.rt));
+    // A virtual gamepad's triggers run from -32768 (released) to 32767
+    // (SDL_virtualjoystick.c); 0 would hold both at half (gas + brake).
+    auto trigger = [](float v) {
+      return Sint16(std::lround(std::clamp(v, 0.0f, 1.0f) * 65535.0f) - 32768);
+    };
+    SDL_SetJoystickVirtualAxis(joystick_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, trigger(s.lt));
+    SDL_SetJoystickVirtualAxis(joystick_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, trigger(s.rt));
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
       SDL_SetJoystickVirtualButton(joystick_, b, s.buttons[b]);
   }
