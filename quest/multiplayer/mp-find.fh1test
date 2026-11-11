@@ -1,0 +1,46 @@
+pinyon-shift-fh1-render-test-v1
+# clock-hz 60
+input 0 0000 0 0 0 0 0 0
+input 360 0010 0 0 0 0 0 0
+input 368 0000 0 0 0 0 0 0
+input 480 0010 0 0 0 0 0 0
+input 488 0000 0 0 0 0 0 0
+input 600 0010 0 0 0 0 0 0
+input 608 0000 0 0 0 0 0 0
+input 720 0010 0 0 0 0 0 0
+input 728 0000 0 0 0 0 0 0
+input 960 0002 0 0 0 0 0 0
+input 968 0000 0 0 0 0 0 0
+input 1020 1000 0 0 0 0 0 0
+input 1028 0000 0 0 0 0 0 0
+input 2300 1000 0 0 0 0 0 0
+input 2308 0000 0 0 0 0 0 0
+input 3300 1000 0 0 0 0 0 0
+input 3308 0000 0 0 0 0 0 0
+input 3700 1000 0 0 0 0 0 0
+input 3708 0000 0 0 0 0 0 0
+input 4000 1000 0 0 0 0 0 0
+input 4008 0000 0 0 0 0 0 0
+input 4300 1000 0 0 0 0 0 0
+input 4308 0000 0 0 0 0 0 0
+input 4600 1000 0 0 0 0 0 0
+input 4608 0000 0 0 0 0 0 0
+input 4900 1000 0 0 0 0 0 0
+input 4908 0000 0 0 0 0 0 0
+input 5200 1000 0 0 0 0 0 0
+input 5208 0000 0 0 0 0 0 0
+input 5500 1000 0 0 0 0 0 0
+input 5508 0000 0 0 0 0 0 0
+input 5800 1000 0 0 0 0 0 0
+input 5808 0000 0 0 0 0 0 0
+capture 3600 f3600
+capture 3900 f3900
+capture 4200 f4200
+capture 4500 f4500
+capture 4800 f4800
+capture 5100 f5100
+capture 5400 f5400
+capture 5700 f5700
+capture 6000 f6000
+capture 6300 f6300
+stop 6400
