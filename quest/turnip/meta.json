@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "name": "Turnip Quest (Mesa a995eaeda4 + GPUOBJ alloc)",
+  "description": "Mesa Turnip for Meta Quest 3: buffer allocation through GPUOBJ ioctls",
+  "author": "Sgt.Bilko",
+  "packageVersion": "1",
+  "vendor": "Mesa",
+  "driverVersion": "Vulkan 1.4",
+  "minApi": 28,
+  "libraryName": "libvulkan_freedreno.so"
+}

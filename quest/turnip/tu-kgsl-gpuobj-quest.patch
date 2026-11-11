@@ -1,0 +1,126 @@
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
+index 44af0c2..2e934de 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
+@@ -296,7 +296,7 @@ kgsl_bo_init(struct tu_device *dev,
+       }
+    }
+ 
+-   struct kgsl_gpumem_alloc_id req = {
++   struct kgsl_gpuobj_alloc req = {
+       .size = size,
+    };
+ 
+@@ -328,10 +328,23 @@ kgsl_bo_init(struct tu_device *dev,
+    int ret;
+ 
+    ret = safe_ioctl(dev->physical_device->local_fd,
+-                    IOCTL_KGSL_GPUMEM_ALLOC_ID, &req);
++                    IOCTL_KGSL_GPUOBJ_ALLOC, &req);
++   if (ret) {
++      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                       "GPUOBJ_ALLOC failed (%s)", strerror(errno));
++   }
++
++   struct kgsl_gpuobj_info info_req = {
++      .id = req.id,
++   };
++
++   ret = safe_ioctl(dev->physical_device->local_fd,
++                    IOCTL_KGSL_GPUOBJ_INFO, &info_req);
+    if (ret) {
++      struct kgsl_gpuobj_free free_req = { .id = req.id };
++      safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &free_req);
+       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                       "GPUMEM_ALLOC_ID failed (%s)", strerror(errno));
++                       "GPUOBJ_INFO failed (%s)", strerror(errno));
+    }
+ 
+    struct tu_bo* bo = tu_device_lookup_bo(dev, req.id);
+@@ -340,7 +353,7 @@ kgsl_bo_init(struct tu_device *dev,
+    *bo = (struct tu_bo) {
+       .gem_handle = req.id,
+       .size = req.mmapsize,
+-      .iova = req.gpuaddr,
++      .iova = info_req.gpuaddr,
+       .name = tu_debug_bos_add(dev, req.mmapsize, name),
+       .refcnt = 1,
+       .shared_fd = -1,
+@@ -491,14 +504,14 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+ 
+    TU_RMV(bo_destroy, dev, bo);
+ 
+-   struct kgsl_gpumem_free_id req = {
++   struct kgsl_gpuobj_free req = {
+       .id = bo->gem_handle
+    };
+ 
+    /* Tell sparse array that entry is free */
+    memset(bo, 0, sizeof(*bo));
+ 
+-   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
++   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
+ }
+ 
+ static VkResult
+@@ -605,12 +618,12 @@ get_kgsl_prop(int fd, unsigned int type, void *value, size_t size)
+ static bool
+ kgsl_is_memory_type_supported(int fd, uint32_t flags)
+ {
+-   struct kgsl_gpumem_alloc_id req_alloc = {
+-      .flags = flags,
++   struct kgsl_gpuobj_alloc req_alloc = {
+       .size = 0x1000,
++      .flags = flags,
+    };
+ 
+-   int ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, &req_alloc);
++   int ret = safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_ALLOC, &req_alloc);
+    if (ret) {
+       return false;
+    }
+@@ -622,9 +635,9 @@ kgsl_is_memory_type_supported(int fd, uint32_t flags)
+     */
+    bool supported = (req_alloc.flags & flags) == flags;
+ 
+-   struct kgsl_gpumem_free_id req_free = { .id = req_alloc.id };
++   struct kgsl_gpuobj_free req_free = { .id = req_alloc.id };
+ 
+-   safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free);
++   safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_FREE, &req_free);
+ 
+    return supported;
+ }
+@@ -637,12 +650,12 @@ kgsl_is_virtual_bo_supported(int fd)
+       .size = 0x2000,
+       .flags = KGSL_MEMFLAGS_VBO,
+    };
+-   struct kgsl_gpumem_alloc_id req_alloc_child = {
++   struct kgsl_gpuobj_alloc req_alloc_child = {
+       .size = 0x1000,
+    };
+    struct kgsl_gpumem_bind_range req_range = {};
+    struct kgsl_gpumem_bind_ranges req_ranges = {};
+-   struct kgsl_gpumem_free_id req_free_child = {};
++   struct kgsl_gpuobj_free req_free_child = {};
+    struct kgsl_gpuobj_free req_free_parent = {};
+ 
+    int ret = safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_ALLOC, &req_alloc_parent);
+@@ -650,7 +663,7 @@ kgsl_is_virtual_bo_supported(int fd)
+       return false;
+    }
+ 
+-   ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, &req_alloc_child);
++   ret = safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_ALLOC, &req_alloc_child);
+    if (ret) {
+       goto free_parent;
+    }
+@@ -680,7 +693,7 @@ kgsl_is_virtual_bo_supported(int fd)
+ 
+ free_child:
+    req_free_child = { .id = req_alloc_child.id };
+-   safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free_child);
++   safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_FREE, &req_free_child);
+ 
+ free_parent:
+    req_free_parent = { .id = req_alloc_parent.id };
