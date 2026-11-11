@@ -24,6 +24,15 @@ git -C mesa fetch -q --depth=1 origin $MESA_COMMIT
 git -C mesa checkout -q -f --detach FETCH_HEAD
 cd mesa
 git apply "$HERE/tu-kgsl-gpuobj-quest.patch"
+# Android gralloc/UBWC fixes from StevenMXZ's V37 recipe (GPL-3.0 scripts,
+# fetched, not vendored). Without them the game's frames reach the XR
+# surface in the wrong layout (whole screen of vertical stripes).
+SX=$W/sx; SXREF=A8xx
+mkdir -p "$SX/aimapper"
+for f in fix_gralloc_flushall.py add_aimapper_gralloc.py add_ubwc_swapchain_usage.py aimapper/u_gralloc_aimapper.c; do
+  curl -sfL "https://raw.githubusercontent.com/StevenMXZ/Adreno-Tools-Drivers/$SXREF/patches/patchsv1/android/$f" -o "$SX/$f"
+done
+for s in fix_gralloc_flushall add_aimapper_gralloc add_ubwc_swapchain_usage; do python3 "$SX/$s.py"; done
 # NDK r29 fixes (StevenMXZ/Adreno-Tools-Drivers build_turnip.sh).
 sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h
 sed -i 's/, hnd->handle/, (void *)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c
