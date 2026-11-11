@@ -447,10 +447,10 @@ index 2b222da..29fb6d3 100644
      case 0x000B0025: {
 diff --git a/src/kernel/xam/live_service.cpp b/src/kernel/xam/live_service.cpp
 new file mode 100644
-index 0000000..fdb59fd
+index 0000000..e6460aa
 --- /dev/null
 +++ b/src/kernel/xam/live_service.cpp
-@@ -0,0 +1,357 @@
+@@ -0,0 +1,390 @@
 +/**
 + * @file        kernel/xam/live_service.cpp
 + * @brief       Session server client and XNet addressing (live_service.h)
@@ -466,6 +466,7 @@ index 0000000..fdb59fd
 +#include <mutex>
 +#include <set>
 +#include <sstream>
++#include <thread>
 +
 +#include <rex/cvar.h>
 +#include <rex/logging.h>
@@ -499,6 +500,10 @@ index 0000000..fdb59fd
 +std::map<uint32_t, uint32_t> g_contexts;
 +std::map<uint32_t, std::vector<uint8_t>> g_properties;
 +std::set<uint64_t> g_own_sessions;
++// Sessions this instance registered, with their filled slots: re-sent every
++// minute (heartbeat) so the server keeps long lobbies and races.
++std::map<uint64_t, std::pair<uint32_t, uint32_t>> g_hosted;
++std::once_flag g_heartbeat_started;
 +uint64_t g_current_session = 0;
 +std::atomic<bool> g_sessions_started{false};
 +
@@ -721,14 +726,36 @@ index 0000000..fdb59fd
 +  g_properties[id].assign(data, data + std::min<uint32_t>(size, 1024));
 +}
 +
++void StartHeartbeat() {
++  std::call_once(g_heartbeat_started, []() {
++    std::thread([]() {
++      for (;;) {
++        std::this_thread::sleep_for(std::chrono::seconds(60));
++        std::map<uint64_t, std::pair<uint32_t, uint32_t>> hosted;
++        {
++          std::lock_guard lock(g_mutex);
++          hosted = g_hosted;
++        }
++        for (const auto& [id, filled] : hosted) {
++          Request("UPDATE " + IdText(id) + " " + std::to_string(filled.first) + " " +
++                      std::to_string(filled.second),
++                  nullptr);
++        }
++      }
++    }).detach();
++  });
++}
++
 +bool CreateSession(uint64_t id, uint32_t flags, uint32_t public_slots, uint32_t private_slots) {
 +  std::string attrs;
 +  {
 +    std::lock_guard lock(g_mutex);
 +    g_own_sessions.insert(id);
 +    attrs = AttrsText();
++    if (Enabled()) g_hosted.emplace(id, std::make_pair(0u, 0u));
 +  }
 +  if (!Enabled()) return false;
++  StartHeartbeat();
 +  return Request("CREATE " + IdText(id) + " " + IpText(LocalAddress()) + " " +
 +                     std::to_string(flags) + " " + std::to_string(public_slots) + " " +
 +                     std::to_string(private_slots) + " " + attrs,
@@ -737,6 +764,11 @@ index 0000000..fdb59fd
 +
 +void UpdateSession(uint64_t id, uint32_t filled_public, uint32_t filled_private) {
 +  if (!Enabled()) return;
++  {
++    std::lock_guard lock(g_mutex);
++    auto it = g_hosted.find(id);
++    if (it != g_hosted.end()) it->second = {filled_public, filled_private};
++  }
 +  Request("UPDATE " + IdText(id) + " " + std::to_string(filled_public) + " " +
 +              std::to_string(filled_private),
 +          nullptr);
@@ -746,6 +778,7 @@ index 0000000..fdb59fd
 +  {
 +    std::lock_guard lock(g_mutex);
 +    g_own_sessions.erase(id);
++    g_hosted.erase(id);
 +  }
 +  if (!Enabled()) return;
 +  Request("DELETE " + IdText(id), nullptr);
