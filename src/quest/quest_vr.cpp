@@ -383,8 +383,8 @@ class QuestXr {
     jobject surface = nullptr;
     const XrResult res = create_surface_swapchain_(session_, &info, &swapchain_, &surface);
     if (XR_FAILED(res) || !surface) return SetError("xrCreateSwapchainAndroidSurfaceKHR failed", res);
+    // The runtime returns a global reference that lives with the swapchain.
     window_ = ANativeWindow_fromSurface(env, surface);
-    env->DeleteLocalRef(surface);
     if (!window_) return SetError("ANativeWindow_fromSurface failed");
     return true;
   }
@@ -689,8 +689,8 @@ void Start() {
     Fail();
     return;
   }
+  // SDL hands out its own global reference: take another, never delete it.
   jobject global = env->NewGlobalRef(activity);
-  env->DeleteLocalRef(activity);
   std::thread([vm, global] {
     QuestXr xr(vm, global);
     xr.Run();
