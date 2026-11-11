@@ -1,0 +1,46 @@
+pinyon-shift-fh1-render-test-v1
+wait 1 30000 file pressstart.wmv
+input 0 0000 0 0 0 0 0 0
+input 60 0010 0 0 0 0 0 0
+input 70 0000 0 0 0 0 0 0
+input 200 1000 0 0 0 0 0 0
+input 210 0000 0 0 0 0 0 0
+input 330 0002 0 0 0 0 0 0
+input 340 0000 0 0 0 0 0 0
+input 360 1000 0 0 0 0 0 0
+input 370 0000 0 0 0 0 0 0
+input 500 1000 0 0 0 0 0 0
+input 510 0000 0 0 0 0 0 0
+input 560 1000 0 0 0 0 0 0
+input 570 0000 0 0 0 0 0 0
+input 640 1000 0 0 0 0 0 0
+input 650 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 730 0000 0 0 0 0 0 0
+input 800 1000 0 0 0 0 0 0
+input 810 0000 0 0 0 0 0 0
+capture 380 f380
+capture 500 f500
+capture 620 f620
+capture 740 f740
+capture 860 f860
+capture 980 f980
+capture 1100 f1100
+capture 1220 f1220
+capture 1340 f1340
+capture 1460 f1460
+capture 1580 f1580
+capture 1700 f1700
+capture 1820 f1820
+capture 1940 f1940
+capture 2060 f2060
+capture 2180 f2180
+capture 2300 f2300
+capture 2420 f2420
+capture 2540 f2540
+capture 2660 f2660
+capture 2780 f2780
+capture 2900 f2900
+capture 3020 f3020
+capture 3140 f3140
+stop 3300
