@@ -714,6 +714,36 @@ class QuestXr {
     return true;
   }
 
+  // Live tuning while the player drives: `setprop debug.fhvr.cvar name=value`
+  // sets one game setting (hot-reload ones apply at once), and the game's
+  // frame rate is logged every 5 s with the view it was measured in.
+  void PollTuning() {
+    if (++tuning_tick_ % 36 != 0) return;
+    char value[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.fhvr.cvar", value) > 0 && last_cvar_ != value) {
+      last_cvar_ = value;
+      const std::string text = value;
+      const size_t eq = text.find('=');
+      if (eq != std::string::npos && eq > 0) {
+        const std::string name = text.substr(0, eq), v = text.substr(eq + 1);
+        const bool ok = rex::cvar::SetFlagByName(name, v);
+        VR_LOG("cvar %s = %s: %s", name.c_str(), v.c_str(), ok ? "set" : "REFUSED");
+      }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const int64_t frames = GuestFrames();
+    if (perf_since_ == std::chrono::steady_clock::time_point{}) {
+      perf_since_ = now;
+      perf_frames_ = frames;
+    } else if (now - perf_since_ >= std::chrono::seconds(5)) {
+      const double s = std::chrono::duration<double>(now - perf_since_).count();
+      VR_LOG("perf: game %.1f fps (%s)", double(frames - perf_frames_) / s,
+             head_view_shown_ ? "head view" : "screen");
+      perf_since_ = now;
+      perf_frames_ = frames;
+    }
+  }
+
   void RunFrame() {
     XrFrameWaitInfo wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState frame{XR_TYPE_FRAME_STATE};
@@ -721,6 +751,7 @@ class QuestXr {
     XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
     if (XR_FAILED(xrBeginFrame(session_, &begin_info))) return;
     if (focused_) UpdateInput();
+    PollTuning();
 
     // The compositor samples a surface swapchain bottom-up; the presenter
     // writes the top row first, so flip it there.
@@ -831,6 +862,10 @@ class QuestXr {
   XrTime first_place_ = 0;
   XrPosef screen_pose_{{0, 0, 0, 1}, {0, 0, 0}}, flat_pose_{{0, 0, 0, 1}, {0, 0, 0}};
   bool head_view_shown_ = false;
+  uint32_t tuning_tick_ = 0;
+  std::string last_cvar_;
+  std::chrono::steady_clock::time_point perf_since_{};
+  int64_t perf_frames_ = 0;
   uint32_t head_log_ = 0;
   bool dpad_used_ = false, menu_down_ = false, menu_was_back_ = false;
   int start_frames_ = 0;
