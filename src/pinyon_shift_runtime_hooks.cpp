@@ -8132,6 +8132,12 @@ void PinyonShiftCameraFieldOfView(PPCRegister& f1) {
   // Up to 2x applies to every camera, and a wide one would reach 180
   // degrees, where the projection's tangent diverges; stop at 170.
   constexpr double kMaxFieldOfView = 170.0 * 3.14159265358979323846 / 180.0;
+  // The VR view sets the headset's field of view for the head-tracked
+  // cameras (src/quest); the picture is shown at that size.
+  if (const float vr = pinyon_shift::head_tracking::FieldOfViewOverride(); vr > 0.0f) {
+    f1.f64 = double(vr);
+    return;
+  }
   const double scale = REXCVAR_GET(pinyon_shift_fov_scale);
   if (scale != 1.0) {
     f1.f64 = double(float(std::min(f1.f64 * scale, std::max(f1.f64, kMaxFieldOfView))));

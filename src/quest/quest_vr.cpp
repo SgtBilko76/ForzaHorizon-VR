@@ -19,14 +19,19 @@
 
 #include <SDL3/SDL.h>
 #include <rex/cvar.h>
+#include <rex/perf/counter.h>
 #include <rex/ui/surface_android.h>
+
+#include "head_tracking/head_tracking.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -67,6 +72,66 @@ bool LoadFunction(XrInstance instance, const char* name, Fn& out) {
 
 using CreateSurfaceSwapchainFn = XrResult(XRAPI_PTR*)(XrSession, const XrSwapchainCreateInfo*,
                                                       XrSwapchain*, jobject*);
+
+// ---- head-tracked view
+// The game's cockpit and hood cameras turn and move with the head through
+// the immersive camera mod's head layers (head_tracking, #489). The XR thread
+// publishes the head pose relative to the recentred seat; the camera reads
+// it once per game frame, and that frame's pose is kept so the picture can
+// be shown where the head was when it was drawn (a quad that the compositor
+// keeps fixed in the room while the head moves on).
+constexpr float kDegrees = 57.2957795f;
+constexpr float kVrVerticalFovDeg = 70.0f;  // debug.fhvr.vfov; 16:9 -> ~102 deg wide
+constexpr float kQuadDistanceM = 10.0f;     // mono picture: far, so the eyes rest
+constexpr int kShownLagFrames = 2;          // debug.fhvr.lagframes
+constexpr float kPoseLeadMs = 33.0f;        // debug.fhvr.lead
+
+XrQuaternionf QuatMul(const XrQuaternionf& a, const XrQuaternionf& b) {
+  return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+XrQuaternionf QuatConj(const XrQuaternionf& q) { return {-q.x, -q.y, -q.z, q.w}; }
+XrVector3f QuatRotate(const XrQuaternionf& q, const XrVector3f& v) {
+  const XrQuaternionf p{v.x, v.y, v.z, 0.0f};
+  const XrQuaternionf r = QuatMul(QuatMul(q, p), QuatConj(q));
+  return {r.x, r.y, r.z};
+}
+
+struct HeadFrameSample {
+  int64_t frame = 0;  // guest swaps counted when the camera read it
+  XrPosef pose{{0, 0, 0, 1}, {0, 0, 0}};  // the head in LOCAL space
+};
+
+struct HeadShared {
+  std::mutex mutex;
+  bool have = false;
+  head_tracking::Pose latest{};     // OpenTrack convention, for the camera
+  XrPosef latest_local{{0, 0, 0, 1}, {0, 0, 0}};
+  int64_t frame = -1;               // the game frame the frozen pose belongs to
+  head_tracking::Pose frame_pose{};
+  std::deque<HeadFrameSample> samples;
+  std::chrono::steady_clock::time_point last_read{};
+} g_head;
+
+int64_t GuestFrames() {
+  return rex::perf::GetTotalCounter(rex::perf::CounterId::kSourceFrameCount);
+}
+
+// head_tracking's source, on the game's thread: one pose per game frame.
+bool ReadHeadPose(head_tracking::Pose* out) {
+  std::lock_guard lock(g_head.mutex);
+  if (!g_head.have) return false;
+  const int64_t frame = GuestFrames();
+  if (frame != g_head.frame) {
+    g_head.frame = frame;
+    g_head.frame_pose = g_head.latest;
+    g_head.samples.push_back({frame, g_head.latest_local});
+    while (g_head.samples.size() > 64) g_head.samples.pop_front();
+  }
+  g_head.last_read = std::chrono::steady_clock::now();
+  *out = g_head.frame_pose;
+  return true;
+}
 
 // Shared between the XR thread and the presenter's thread.
 struct Shared {
@@ -594,6 +659,61 @@ class QuestXr {
     pad_.Publish(s);
   }
 
+  // The head relative to the recentred seat (screen_pose_: head position,
+  // yaw only), predicted a little past this frame's display, for the camera.
+  void PublishHead(XrTime display_time) {
+    const float lead_ms = PropertyFloat("debug.fhvr.lead", kPoseLeadMs);
+    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(xrLocateSpace(view_space_, local_space_,
+                                display_time + XrTime(lead_ms * 1.0e6f), &location)) ||
+        !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+      return;
+    if (!(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+      location.pose.position = screen_pose_.position;
+    const XrQuaternionf seat_inv = QuatConj(screen_pose_.orientation);
+    const XrQuaternionf q = QuatMul(seat_inv, location.pose.orientation);
+    const XrVector3f d{location.pose.position.x - screen_pose_.position.x,
+                       location.pose.position.y - screen_pose_.position.y,
+                       location.pose.position.z - screen_pose_.position.z};
+    const XrVector3f p = QuatRotate(seat_inv, d);
+    // R = Ry(yaw) Rx(pitch) Rz(roll), OpenXR axes (x right, y up, z back).
+    const float r02 = 2.0f * (q.x * q.z + q.y * q.w);
+    const float r22 = 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
+    const float r12 = 2.0f * (q.y * q.z - q.x * q.w);
+    const float r10 = 2.0f * (q.x * q.y + q.z * q.w);
+    const float r11 = 1.0f - 2.0f * (q.x * q.x + q.z * q.z);
+    const float yaw = std::atan2(r02, r22);
+    const float pitch = std::asin(std::clamp(-r12, -1.0f, 1.0f));
+    const float roll = std::atan2(r10, r11);
+    // OpenTrack: positive = look right, look up, tilt right; x right, y up,
+    // z forward. The position follows the head only with debug.fhvr.pos 1
+    // (the default): 0 keeps the camera at the seat.
+    const float pos = PropertyFloat("debug.fhvr.pos", 1.0f);
+    head_tracking::Pose pose{-yaw * kDegrees, pitch * kDegrees, -roll * kDegrees,
+                             p.x * pos, p.y * pos, -p.z * pos};
+    std::lock_guard lock(g_head.mutex);
+    g_head.latest = pose;
+    g_head.latest_local = location.pose;
+    g_head.have = true;
+  }
+
+  // The head pose the shown picture was drawn with: the camera's sample from
+  // debug.fhvr.lagframes game frames before the newest one swapped.
+  bool ShownHead(XrPosef* pose, int64_t* age_frames, bool* active) {
+    const int lag = int(PropertyFloat("debug.fhvr.lagframes", float(kShownLagFrames)));
+    const int64_t now_frame = GuestFrames();
+    std::lock_guard lock(g_head.mutex);
+    *active = g_head.have &&
+              std::chrono::steady_clock::now() - g_head.last_read < std::chrono::milliseconds(300);
+    if (!*active || g_head.samples.empty()) return false;
+    const HeadFrameSample* best = &g_head.samples.front();
+    for (const HeadFrameSample& s : g_head.samples)
+      if (s.frame <= now_frame - lag) best = &s;
+    *pose = best->pose;
+    *age_frames = now_frame - best->frame;
+    return true;
+  }
+
   void RunFrame() {
     XrFrameWaitInfo wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState frame{XR_TYPE_FRAME_STATE};
@@ -618,7 +738,41 @@ class QuestXr {
         placed_ = false;
       }
       if (!placed_) PlaceScreen(frame.predictedDisplayTime);
-      if (placed_) {
+      if (placed_) PublishHead(frame.predictedDisplayTime);
+      XrPosef shown{};
+      int64_t age = 0;
+      bool head_active = false;
+      const bool head_view = placed_ && ShownHead(&shown, &age, &head_active) &&
+                             PropertyFloat("debug.fhvr.vr", 1.0f) != 0.0f;
+      // The cameras take the headset's field of view only while the head
+      // view is up, so chase cameras and menus keep the game's own.
+      const float vfov = std::clamp(PropertyFloat("debug.fhvr.vfov", kVrVerticalFovDeg), 30.0f, 120.0f);
+      head_tracking::SetFieldOfViewOverride(head_view ? vfov / kDegrees : 0.0f);
+      if (head_view != head_view_shown_) {
+        head_view_shown_ = head_view;
+        VR_LOG("view: %s", head_view ? "head-tracked (cockpit/hood camera)" : "curved screen");
+      }
+      if (head_view && ++head_log_ % 720 == 0)
+        VR_LOG("head view: vfov %.0f, picture %lld game frames old, frames %lld", vfov,
+               (long long)age, (long long)GuestFrames());
+      if (head_view) {
+        // The picture where the head was when it was drawn, as wide as the
+        // camera's field of view, far ahead.
+        const float d = kQuadDistanceM;
+        const float tan_v = std::tan(vfov * 0.5f / kDegrees);
+        XrPosef pose = shown;
+        const XrVector3f ahead = QuatRotate(pose.orientation, {0.0f, 0.0f, -d});
+        pose.position = {pose.position.x + ahead.x, pose.position.y + ahead.y,
+                         pose.position.z + ahead.z};
+        if (has_image_layout_) quad.next = &flip;
+        quad.space = local_space_;
+        quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        quad.subImage.swapchain = swapchain_;
+        quad.subImage.imageRect.extent = {kSurfaceWidth, kSurfaceHeight};
+        quad.pose = pose;
+        quad.size = {2.0f * d * tan_v * float(kSurfaceWidth) / float(kSurfaceHeight), 2.0f * d * tan_v};
+        layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+      } else if (placed_) {
         XrSwapchainSubImage sub{};
         sub.swapchain = swapchain_;
         sub.imageRect.extent = {kSurfaceWidth, kSurfaceHeight};
@@ -676,6 +830,8 @@ class QuestXr {
   bool placed_ = false, replaced_ = false;
   XrTime first_place_ = 0;
   XrPosef screen_pose_{{0, 0, 0, 1}, {0, 0, 0}}, flat_pose_{{0, 0, 0, 1}, {0, 0, 0}};
+  bool head_view_shown_ = false;
+  uint32_t head_log_ = 0;
   bool dpad_used_ = false, menu_down_ = false, menu_was_back_ = false;
   int start_frames_ = 0;
   std::chrono::steady_clock::time_point menu_since_{};
@@ -691,6 +847,9 @@ void Start() {
   // kept running (Quest 3, 2026-11-11); FIFO hands every frame over.
   rex::cvar::SetFlagByName("vulkan_allow_present_mode_mailbox", "false");
   rex::cvar::SetFlagByName("vulkan_allow_present_mode_immediate", "false");
+  // The headset drives the cockpit and hood cameras (head-tracked view).
+  head_tracking::SetPoseSource(ReadHeadPose);
+  rex::cvar::SetFlagByName("head_tracking", "true");
   auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
   auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
   JavaVM* vm = nullptr;

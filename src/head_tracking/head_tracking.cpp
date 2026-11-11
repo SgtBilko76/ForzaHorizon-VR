@@ -212,11 +212,29 @@ std::array<bool, 6> ParseInvert(std::string_view text) {
   return invert;
 }
 
+std::atomic<PoseSource> g_pose_source{nullptr};
+std::atomic<float> g_fov_override{0.0f};
+
+void SetPoseSource(PoseSource source) {
+  g_pose_source.store(source, std::memory_order_release);
+}
+
+void SetFieldOfViewOverride(float radians) {
+  g_fov_override.store(radians, std::memory_order_relaxed);
+}
+
+float FieldOfViewOverride() {
+  return g_fov_override.load(std::memory_order_relaxed);
+}
+
 Pose Current() {
   if (!REXCVAR_GET(head_tracking))
     return {};
   Pose pose{};
-  if (const auto test = ParseTestPose(REXCVAR_GET(head_tracking_test_pose))) {
+  if (const PoseSource source = g_pose_source.load(std::memory_order_acquire)) {
+    if (!source(&pose))
+      return {};
+  } else if (const auto test = ParseTestPose(REXCVAR_GET(head_tracking_test_pose))) {
     pose = *test;
   } else {
     auto& receiver = Shared();
@@ -240,7 +258,8 @@ Pose Current() {
 
 void Update() {
   auto& receiver = Shared();
-  const bool wanted = REXCVAR_GET(head_tracking) && REXCVAR_GET(head_tracking_test_pose).empty();
+  const bool wanted = REXCVAR_GET(head_tracking) && REXCVAR_GET(head_tracking_test_pose).empty() &&
+                      !g_pose_source.load(std::memory_order_relaxed);
   receiver.port.store(wanted ? REXCVAR_GET(head_tracking_port) : 0, std::memory_order_relaxed);
   if (wanted && !receiver.thread.joinable())
     receiver.thread = std::thread(Listen, &receiver);

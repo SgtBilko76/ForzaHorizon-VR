@@ -41,4 +41,15 @@ Pose Current();
 // frame.
 void Update();
 
+// A pose source inside the app (a VR runtime's head pose) instead of
+// OpenTrack: asked each time the camera reads the pose; returns false when it
+// has none. With a source set, no UDP receiver runs.
+using PoseSource = bool (*)(Pose* out);
+void SetPoseSource(PoseSource source);
+
+// A vertical field of view (radians) every camera uses instead of its own,
+// 0 for none (the cameras keep theirs). Set by the VR view.
+void SetFieldOfViewOverride(float radians);
+float FieldOfViewOverride();
+
 }  // namespace pinyon_shift::head_tracking
