@@ -1,0 +1,5 @@
+--live_server=192.168.178.22:36000
+--xam_report_live_signin=true
+--xam_grant_privileges=true
+--net_port_offset=30000
+--net_trace=true
