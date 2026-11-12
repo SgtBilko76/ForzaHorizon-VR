@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.3-preview.1 - 2026-11-12
+
+- Changed: online play is off on the Quest build: quick match and the
+  other online modes are unavailable until a later build turns them
+  back on.
+- New: the Quest build starts with 2x MSAA at 1x resolution scale,
+  smoothing edges on the curved screen; saved antialiasing choices
+  from earlier builds are kept and desktop defaults are unchanged.
+- Fixed: antialiasing stays off for graphics configurations that did
+  not ask for it; the launcher no longer defaults to MSAA on.
+
 ## 0.8.2 - 2026-11-07
 
 - Fixed: Windows setup from a disc image stopped on a missing
