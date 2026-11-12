@@ -1,5 +1,6 @@
---live_server=217.154.211.69:36000
---xam_report_live_signin=true
---xam_grant_privileges=true
---net_port_offset=30000
---net_trace=true
+# Online play disabled (2026-11-12): the team moved the focus to resolution
+# and antialiasing optimization. No --live_server line means the live
+# subsystem stays off and the title runs offline.
+--xam_report_live_signin=false
+--xam_grant_privileges=false
+--net_trace=false
