@@ -397,6 +397,13 @@ retained an explicit saved 4X choice in separate private states. All 16 normal
 device profile files retained their pre-install hashes. These are configuration
 and startup checks; sustained driving performance remains unqualified.
 
+On the Quest branch (0.8.3-preview.1), a new Android configuration instead
+starts with 2x MSAA at 1x resolution scale: the curved VR screen shows edge
+aliasing at single-sample. Checked by eye in a Quest 3 only; no frame time is
+claimed. An existing configuration keeps its saved MSAA choice, and the
+texture cache still clamps Android to 1x unless
+`android_allow_resolution_scale` is set.
+
 Fatal scripted-test rejection now exits immediately after flushing its failure
 receipt. Reusing an existing output directory previously triggered SDL thread
 crashes during static destruction on the Odin. A private rejection check and

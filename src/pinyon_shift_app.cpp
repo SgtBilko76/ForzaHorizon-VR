@@ -222,9 +222,20 @@ std::string DefaultConfigText() {
             "disable_bloom = true\n"
             "disable_motion_blur = true\n"
             "disable_depth_of_field = true\n"
+#if defined(__ANDROID__)
+            // Quest VR: the curved screen sits close to the eyes, so edge
+            // aliasing shows. 2x MSAA at 1x scale, tested in the headset
+            // (Quest 3). Higher scales stay off: the texture cache clamps
+            // Android to 1x unless android_allow_resolution_scale is set.
+            "fh1_msaa_single_sample = false\n"
+            "fh1_msaa_2x = true\n"
+            "draw_resolution_scale_x = 1\n"
+            "draw_resolution_scale_y = 1\n"
+#else
             "fh1_msaa_single_sample = true\n"
             "draw_resolution_scale_x = 1\n"
             "draw_resolution_scale_y = 1\n"
+#endif
             "clear_memory_page_state = false\n";
   return output.str();
 }
@@ -576,9 +587,16 @@ bool EnsureSupportedConfig(const std::filesystem::path& path, bool& created,
         {"disable_bloom", "disable_bloom = true\n"},
         {"disable_motion_blur", "disable_motion_blur = true\n"},
         {"disable_depth_of_field", "disable_depth_of_field = true\n"},
+#if defined(__ANDROID__)
+        {"fh1_msaa_single_sample", "fh1_msaa_single_sample = false\n"},
+        {"fh1_msaa_2x", "fh1_msaa_2x = true\n"},
+        {"draw_resolution_scale_x", "draw_resolution_scale_x = 1\n"},
+        {"draw_resolution_scale_y", "draw_resolution_scale_y = 1\n"},
+#else
         {"fh1_msaa_single_sample", "fh1_msaa_single_sample = true\n"},
         {"draw_resolution_scale_x", "draw_resolution_scale_x = 1\n"},
         {"draw_resolution_scale_y", "draw_resolution_scale_y = 1\n"},
+#endif
         {"gpu_backend", "gpu_backend = \"vulkan\"\n"},
         {"gpu_record_thread", "gpu_record_thread = true\n"},
         {"vsync", "vsync = true\n"},
