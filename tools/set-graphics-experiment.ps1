@@ -237,7 +237,7 @@ $gamePresets = [ordered]@{
 
 # The in-game preset the file matches, as the settings screen shows it.
 function Get-GamePreset([string]$Text) {
-    $defaults = @{ present_effect = '"bilinear"'; fh1_msaa_single_sample = 'false'
+    $defaults = @{ present_effect = '"bilinear"'; fh1_msaa_single_sample = 'true'
         host_present_fps_limit = '0'; anisotropic_override = '-1'; swap_post_effect = '"none"'
         pinyon_shift_fh1_render_fps_limit = '0'; draw_resolution_scale_x = '1'; draw_resolution_scale_y = '1'
         pinyon_shift_fh1_shadows = 'true'; pinyon_shift_fh1_env_map_rate = '1'; fh1_untile_predicated_tiling = 'false' }
