@@ -113,6 +113,16 @@
                 android:resource="@xml/shortcuts" />
         </activity>
 
+        <!-- The Quest release's first start: builds the game's libraries on
+             the device from the player's disc files (GameBuild). -->
+        <activity
+            android:name="studio.deimos.pinyonshift.BuildActivity"
+            android:process=":build"
+            android:label="ForzaHorizon-VR"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
+            android:exported="false" />
+
         <activity
             android:name="studio.deimos.pinyonshift.PinyonShiftActivity"
             android:label="ForzaHorizon-VR"

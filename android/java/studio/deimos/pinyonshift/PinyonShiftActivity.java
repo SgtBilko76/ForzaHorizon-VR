@@ -5,6 +5,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.system.ErrnoException;
@@ -54,6 +56,7 @@ public class PinyonShiftActivity extends SDLActivity {
     private static final String TAG = "PinyonShift";
     private static final int REQUEST_GPU_DRIVER_ZIP = 0x5053;
     private File driversDir;
+    private boolean buildMissing;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,6 +67,19 @@ public class PinyonShiftActivity extends SDLActivity {
                 new File(base, "state").getAbsolutePath());
         setDefaultEnvironment("PINYON_SHIFT_GAME_ROOT",
                 new File(base, "game/base").getAbsolutePath());
+        // The Quest release builds the game's libraries on the device
+        // (GameBuild): until that is done, the build screen comes first, and
+        // afterwards the runtime finds the facades in the build's folder.
+        buildMissing = GameBuild.needed(this, new File(base, "game/base"));
+        if (buildMissing) {
+            Intent build = new Intent(this, BuildActivity.class);
+            if (getIntent() != null && getIntent().getExtras() != null) {
+                build.putExtras(getIntent().getExtras());
+            }
+            startActivity(build);
+        } else if (!GameBuild.packaged(this)) {
+            setEnvironment("REX_MODULE_LIBRARY_DIR", GameBuild.output(this).getAbsolutePath());
+        }
         // Custom GPU drivers (Mesa Turnip) the player copied in, chosen with
         // android_gpu_driver; the runtime copies the chosen one inside.
         driversDir = new File(base, "state/drivers");
@@ -118,6 +134,13 @@ public class PinyonShiftActivity extends SDLActivity {
         }
         recordDisplayEnvironment();
         super.onCreate(savedInstanceState);
+        if (buildMissing) {
+            // SDL now counts this process as started and would refuse a later
+            // start in it; the build runs in its own process, so end this one.
+            finish();
+            new Handler(Looper.getMainLooper()).postDelayed(BuildActivity.EXIT, 500);
+            return;
+        }
         // A race played on a controller touches nothing, and a screen that
         // times out sends the game to the background, where it pauses (a
         // scripted route stalls the same way). Only while this window shows.
@@ -165,7 +188,23 @@ public class PinyonShiftActivity extends SDLActivity {
             throw new UnsatisfiedLinkError("Pinyon Shift needs an ARMv8.2 CPU "
                     + "(Cortex-A55, Cortex-A75 or newer); this device's CPU is older.");
         }
-        super.loadLibraries();
+        if (buildMissing) {
+            throw new UnsatisfiedLinkError("the game is being built for this device");
+        }
+        // As SDL would, but libmain.so from the on-device build when the
+        // package does not carry it.
+        System.loadLibrary("c++_shared");
+        System.loadLibrary("rexruntime");
+        if (GameBuild.packaged(this)) {
+            System.loadLibrary("main");
+        } else {
+            System.load(GameBuild.library(this, GameBuild.MAIN).getAbsolutePath());
+        }
+    }
+
+    @Override
+    protected String getMainSharedObject() {
+        return GameBuild.library(this, GameBuild.MAIN).getAbsolutePath();
     }
 
     // Whether the kernel lists every given feature for the CPU. True when

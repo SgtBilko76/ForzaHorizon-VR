@@ -762,6 +762,29 @@ def bundled_driver_files() -> list[tuple[Path, str]]:
     return files
 
 
+# The Quest release (PINYON_QUEST_RELEASE=1) carries no game code: the game's
+# own libraries are left out and the headset builds them from the player's
+# disc files at the first start (BuildActivity), with the tools and kit
+# quest/buildkit/make-buildkit.py prepares. No seed shader cache either: it
+# holds translations of the game's shaders.
+GAME_LIBRARIES = ("libmain.so", "libpinyon_shift_SpeechFacade_default.so",
+                  "libpinyon_shift_XMediaFacade_default.so")
+BUILDKIT = WORK / "buildkit"
+
+
+def quest_release() -> bool:
+    return os.environ.get("PINYON_QUEST_RELEASE") == "1"
+
+
+def buildkit_files() -> list[tuple[Path, str]]:
+    archive = BUILDKIT / "buildkit.zip"
+    tools = sorted((BUILDKIT / "lib").glob("lib*.so")) if (BUILDKIT / "lib").is_dir() else []
+    if not archive.is_file() or not tools:
+        raise AndroidError("no build kit: run quest/buildkit/make-buildkit.py first")
+    return [(path, f"lib/{CONFIG['abi']}/{path.name}") for path in tools] + \
+        [(archive, "assets/buildkit.zip")]
+
+
 # A seed shader cache, packaged as assets/shader-cache/<file>, which the
 # activity copies into state/cache/shaders/shareable where a file is missing:
 # the translated shader pack and the pipeline storage collected on a Quest 3,
@@ -866,6 +889,11 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
         stripped.append(target)
 
     manifest = _build_manifest(tools, version_name, libraries)
+    if quest_release():
+        stripped = [path for path in stripped if path.name not in GAME_LIBRARIES]
+        manifest["executable_sha256"] = None
+        manifest["generated_locally"] = False
+        manifest["built_on_device"] = True
     (staging / "pinyon_shift_build.json").write_text(json.dumps(manifest, indent=2) + "\n",
                                                      encoding="utf-8")
     # Android 15 devices with 16 KiB pages refuse libraries whose load
@@ -889,8 +917,12 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
             apk.write(library, f"lib/{CONFIG['abi']}/{library.name}")
         for path, name in bundled_driver_files():
             apk.write(path, name)
-        for path, name in bundled_shader_cache_files():
-            apk.write(path, name)
+        if quest_release():
+            for path, name in buildkit_files():
+                apk.write(path, name)
+        else:
+            for path, name in bundled_shader_cache_files():
+                apk.write(path, name)
 
     output = WORK / "pinyon-shift.apk"
     # Aligned and signed (v2) in tools/apk_sign.py rather than by zipalign,

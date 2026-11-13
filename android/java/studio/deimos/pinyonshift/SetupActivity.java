@@ -180,7 +180,9 @@ public class SetupActivity extends Activity implements View.OnClickListener {
     }
 
     private void startGame() {
-        Intent game = new Intent(this, PinyonShiftActivity.class);
+        // The Quest release builds the game on the device first (GameBuild).
+        boolean build = GameBuild.needed(this, new File(base, "game/base"));
+        Intent game = new Intent(this, build ? BuildActivity.class : PinyonShiftActivity.class);
         Intent intent = getIntent();
         if (intent != null && intent.getExtras() != null) {
             game.putExtras(intent.getExtras());
