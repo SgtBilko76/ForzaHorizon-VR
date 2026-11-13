@@ -246,7 +246,7 @@ public class SetupActivity extends Activity implements View.OnClickListener {
         column.setPadding(dp(28), dp(24), dp(28), dp(32));
         scroll.addView(column);
 
-        text(column, "Pinyon Shift", 26, Color.WHITE, true);
+        text(column, "ForzaHorizon-VR", 26, Color.WHITE, true);
         intro = text(column, "", 15, MUTED, false);
         // No Qualcomm kernel GPU driver: probably Mali (Tensor, Exynos, Dimensity), which
         // the game refuses at start unless the opt-in at the bottom is ticked.

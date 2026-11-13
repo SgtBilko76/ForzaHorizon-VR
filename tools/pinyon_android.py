@@ -362,6 +362,10 @@ def build_directory(args: argparse.Namespace) -> Path:
 
 def release_version() -> tuple[str, int]:
     release = json.loads((ROOT / "config" / "release.json").read_text(encoding="utf-8"))
+    # The Quest port's own APK version, when set: its versionCode must stay
+    # above every earlier install, whatever the Pinyon Shift number is.
+    if "android_version_name" in release:
+        return str(release["android_version_name"]), int(release["android_version_code"])
     name = str(release["version"])
     major, minor, patch = (int(part) for part in name.split("-")[0].split(".")[:3])
     return name, major * 10000 + minor * 100 + patch
@@ -758,6 +762,22 @@ def bundled_driver_files() -> list[tuple[Path, str]]:
     return files
 
 
+# A seed shader cache, packaged as assets/shader-cache/<file>, which the
+# activity copies into state/cache/shaders/shareable where a file is missing:
+# the translated shader pack and the pipeline storage collected on a Quest 3,
+# so a new install starts with them prewarmed. From .local/android/shader-cache
+# (not in the repository: it holds translations of the game's shaders).
+SHADER_CACHE = WORK / "shader-cache"
+
+
+def bundled_shader_cache_files() -> list[tuple[Path, str]]:
+    if not SHADER_CACHE.is_dir():
+        print(f"warning: no seed shader cache in {SHADER_CACHE}; not packaged")
+        return []
+    return [(path, f"assets/shader-cache/{path.name}") for path in sorted(SHADER_CACHE.iterdir())
+            if path.is_file() and path.name.startswith("4D5309C9.")]
+
+
 def _java_parts(tools: Tools, staging: Path, version_name: str, version_code: int,
                 debuggable: bool) -> tuple[Path, Path]:
     """The linked manifest and resources (an APK without code) and
@@ -868,6 +888,8 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
         for library in stripped:
             apk.write(library, f"lib/{CONFIG['abi']}/{library.name}")
         for path, name in bundled_driver_files():
+            apk.write(path, name)
+        for path, name in bundled_shader_cache_files():
             apk.write(path, name)
 
     output = WORK / "pinyon-shift.apk"

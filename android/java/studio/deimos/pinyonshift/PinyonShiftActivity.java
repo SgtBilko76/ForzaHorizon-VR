@@ -72,6 +72,10 @@ public class PinyonShiftActivity extends SDLActivity {
         // and the one recommended for this GPU, which android_gpu_driver
         // "auto" (the default) loads.
         installBundledDrivers();
+        // The seed shader cache (translated shaders and the pipelines to
+        // build at start), so a first start does not translate and compile
+        // them while playing. A file the game already has is kept.
+        installBundledShaderCache(new File(base, "state/cache/shaders/shareable"));
         String adreno = adrenoModel();
         if (adreno != null) {
             setDefaultEnvironment("PINYON_SHIFT_ADRENO_MODEL", adreno);
@@ -285,6 +289,34 @@ public class PinyonShiftActivity extends SDLActivity {
             }
         } catch (IOException error) {
             Log.w(TAG, "bundled GPU drivers not installed", error);
+        }
+    }
+
+    // Copies each file under the package's assets/shader-cache into the
+    // state's shader storage where it is missing; written beside and renamed,
+    // so an interrupted copy is retried at the next start.
+    private void installBundledShaderCache(File shareable) {
+        try {
+            String[] files = getAssets().list("shader-cache");
+            if (files == null || files.length == 0) return;
+            shareable.mkdirs();
+            for (String file : files) {
+                File target = new File(shareable, file);
+                if (target.exists()) continue;
+                File partial = new File(shareable, file + ".partial");
+                try (InputStream in = getAssets().open("shader-cache/" + file);
+                     OutputStream out = new FileOutputStream(partial)) {
+                    copy(in, out);
+                }
+                if (!partial.renameTo(target)) {
+                    partial.delete();
+                    Log.w(TAG, "seed shader cache " + file + " not installed");
+                    continue;
+                }
+                Log.i(TAG, "seed shader cache " + file + " installed");
+            }
+        } catch (IOException error) {
+            Log.w(TAG, "seed shader cache not installed", error);
         }
     }
 

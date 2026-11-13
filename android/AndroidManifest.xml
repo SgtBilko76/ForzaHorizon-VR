@@ -66,7 +66,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
-        android:label="Pinyon Shift"
+        android:label="ForzaHorizon-VR"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="false"
@@ -97,7 +97,7 @@
              first (ONE_CLICK_SETUP_BACKLOG A-4). -->
         <activity
             android:name="studio.deimos.pinyonshift.SetupActivity"
-            android:label="Pinyon Shift"
+            android:label="ForzaHorizon-VR"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
             android:exported="true">
@@ -115,7 +115,7 @@
 
         <activity
             android:name="studio.deimos.pinyonshift.PinyonShiftActivity"
-            android:label="Pinyon Shift"
+            android:label="ForzaHorizon-VR"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:screenOrientation="sensorLandscape"
             android:resizeableActivity="false"
