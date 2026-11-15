@@ -170,6 +170,7 @@ public class SetupActivity extends Activity implements View.OnClickListener {
 
     @Override
     protected void onDestroy() {
+        VrShell.detach(this);
         discovering = false;
         if (installReceiver != null) unregisterReceiver(installReceiver);
         super.onDestroy();
@@ -268,6 +269,7 @@ public class SetupActivity extends Activity implements View.OnClickListener {
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         codeField = field(column, "Six-digit code from the launcher", InputType.TYPE_CLASS_NUMBER);
         codeField.setFilters(new InputFilter[] {new InputFilter.LengthFilter(6)});
+        keypad(column);
         connectButton = button(column, "Connect");
         updateText = text(column, "", 14, ACCENT, false);
         updateText.setVisibility(View.GONE);
@@ -320,7 +322,68 @@ public class SetupActivity extends Activity implements View.OnClickListener {
         playButton = button(column, "Play");
         playButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         ((LinearLayout.LayoutParams) playButton.getLayoutParams()).topMargin = dp(24);
-        setContentView(scroll);
+        // On a VR panel (VrShell) on Meta Quest and PICO.
+        VrShell.attach(this, scroll);
+    }
+
+    // The headset's system keyboard can't type into the VR panel: digits,
+    // the dot and delete for the PC address and the code, into the field
+    // last touched.
+    private EditText typingField;
+
+    private void keypad(LinearLayout parent) {
+        typingField = addressField;
+        View.OnFocusChangeListener focus = new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View view, boolean hasFocus) {
+                if (hasFocus) typingField = (EditText) view;
+            }
+        };
+        addressField.setOnFocusChangeListener(focus);
+        codeField.setOnFocusChangeListener(focus);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        final String[] keys = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0", ".", "\u232B"};
+        for (final String key : keys) {
+            Button button = new Button(this);
+            button.setText(key);
+            button.setAllCaps(false);
+            button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+            button.setMinWidth(0);
+            button.setMinimumWidth(0);
+            button.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    EditText target = typingField;
+                    android.text.Editable text = target.getText();
+                    if (key.equals("\u232B")) {
+                        if (text.length() > 0) text.delete(text.length() - 1, text.length());
+                    } else {
+                        text.append(key);
+                    }
+                    target.setSelection(target.getText().length());
+                }
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(52), dp(48));
+            params.rightMargin = dp(4);
+            row.addView(button, params);
+        }
+        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rowParams.topMargin = dp(6);
+        parent.addView(row, rowParams);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        VrShell.resume(this);
+    }
+
+    @Override
+    protected void onPause() {
+        VrShell.pause(this);
+        super.onPause();
     }
 
     @Override

@@ -30,10 +30,11 @@
         android:name="android.hardware.type.pc"
         android:required="false" />
 
-    <!-- Meta Quest VR (src/quest): the game activity runs an immersive
-         OpenXR session through the Khronos loader. -->
+    <!-- Meta Quest and PICO VR (src/quest): every activity runs an immersive
+         OpenXR session through the Khronos loader (the setup and build
+         screens on a VR panel, VrShell). PICO does not list head tracking. -->
     <uses-feature android:name="android.hardware.vr.headtracking"
-        android:version="1" android:required="true" />
+        android:version="1" android:required="false" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
     <queries>
@@ -86,6 +87,8 @@
         <meta-data android:name="com.oculus.supportedDevices"
             android:value="quest2|questpro|quest3|quest3s" />
         <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+        <!-- PICO: a VR app (all its activities immersive). -->
+        <meta-data android:name="pvr.app.type" android:value="vr" />
 
         <!-- The title's 16:9 at any width; letterboxed by the presenter. -->
         <meta-data android:name="android.max_aspect" android:value="3.0" />
@@ -104,6 +107,9 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.oculus.intent.category.VR" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+                <category android:name="com.picovr.intent.category.VR" />
             </intent-filter>
             <intent-filter>
                 <action android:name="studio.deimos.pinyonshift.SETUP" />
@@ -121,7 +127,15 @@
             android:label="ForzaHorizon-VR"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
-            android:exported="false" />
+            android:exported="false">
+            <!-- Shown on the VR panel (VrShell): immersive like the game. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="com.oculus.intent.category.VR" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+                <category android:name="com.picovr.intent.category.VR" />
+            </intent-filter>
+        </activity>
 
         <activity
             android:name="studio.deimos.pinyonshift.PinyonShiftActivity"
@@ -139,6 +153,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="com.oculus.intent.category.VR" />
                 <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+                <category android:name="com.picovr.intent.category.VR" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />

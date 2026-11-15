@@ -470,6 +470,13 @@ if(ANDROID AND PINYON_SHIFT_QUEST_VR AND TARGET pinyon_shift)
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openxr/lib/${ANDROID_ABI}/libopenxr_loader.so
         IMPORTED_NO_SONAME TRUE)
     target_link_libraries(pinyon_shift PRIVATE pinyon_openxr_loader EGL GLESv3 android log)
+    # The setup and build screens on a VR panel (VrShell.java), on Meta
+    # Quest and PICO alike.
+    add_library(fhvr_shell SHARED src/quest/vr_shell.cpp)
+    target_include_directories(fhvr_shell PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openxr/include)
+    target_link_libraries(fhvr_shell PRIVATE pinyon_openxr_loader EGL GLESv3 android log)
+    target_link_options(fhvr_shell PRIVATE "-Wl,-z,max-page-size=16384")
 endif()
 
 # The mod ABI header (NP-7) and the TOML parser mod.toml is read with.

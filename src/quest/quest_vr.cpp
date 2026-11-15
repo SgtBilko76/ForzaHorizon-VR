@@ -1,11 +1,13 @@
-// Meta Quest VR host: see quest_vr.h. The OpenXR session code follows the
-// GT4 VR port's host (GT4-VR quest/host/quest_xr.cpp), trimmed to what this
-// first stage needs: one curved screen, Touch controllers as an Xbox pad.
+// Meta Quest and PICO VR host: see quest_vr.h. The OpenXR session code
+// follows the GT4 VR port's host (GT4-VR quest/host/quest_xr.cpp), trimmed
+// to what this first stage needs: one curved screen, the Touch (or PICO)
+// controllers as an Xbox pad.
 
 #include "quest/quest_vr.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
@@ -38,6 +40,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifndef XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME
+#define XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME "XR_BD_controller_interaction"
+#endif
 
 #define VR_LOG(...) __android_log_print(ANDROID_LOG_INFO, "FHVR", __VA_ARGS__)
 #define VR_ERR(...) __android_log_print(ANDROID_LOG_ERROR, "FHVR", __VA_ARGS__)
@@ -73,6 +79,33 @@ bool LoadFunction(XrInstance instance, const char* name, Fn& out) {
 
 using CreateSurfaceSwapchainFn = XrResult(XRAPI_PTR*)(XrSession, const XrSwapchainCreateInfo*,
                                                       XrSwapchain*, jobject*);
+
+// Runtimes without XR_KHR_android_surface_swapchain (PICO): the game
+// presents into a SurfaceTexture on the XR thread's GL context, and each new
+// picture is copied into a standard GLES swapchain. debug.fhvr.texpath 1
+// takes this path on Quest too (for testing it there).
+const char* kCopyVertexShader = R"(#version 300 es
+out vec2 vUv;
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  vUv = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+const char* kCopyFragmentShader = R"(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision mediump float;
+uniform samplerExternalOES uTex;
+uniform mat4 uMatrix;
+uniform float uDecode;  // sRGB swapchain: decode the display-ready pixels
+in vec2 vUv;
+out vec4 outColor;
+void main() {
+  vec3 c = texture(uTex, (uMatrix * vec4(vUv, 0.0, 1.0)).xy).rgb;
+  if (uDecode > 0.5) c = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+  outColor = vec4(c, 1.0);
+}
+)";
 
 // ---- head-tracked view
 // The game's cockpit and hood cameras turn and move with the head through
@@ -250,6 +283,7 @@ class QuestXr {
       Fail();
       return;
     }
+    env_ = env;
     if (InitEgl() && InitInstance() && InitSession() && InitActions() && InitScreen(env)) {
       VR_LOG("OpenXR ready, waiting for the session to start");
       while (!exit_) {
@@ -332,18 +366,21 @@ class QuestXr {
       });
     };
     std::vector<const char*> extensions = {XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
-                                           XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
-                                           XR_KHR_ANDROID_SURFACE_SWAPCHAIN_EXTENSION_NAME};
+                                           XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
     for (const char* ext : extensions)
       if (!has(ext)) return SetError((std::string("runtime lacks ") + ext).c_str());
+    // Every vendor extension is optional (Meta Quest and PICO, one APK).
     auto optional = [&](const char* name, bool& flag) {
       flag = has(name);
       if (flag) extensions.push_back(name);
     };
+    if (PropertyFloat("debug.fhvr.texpath", 0.0f) == 0.0f)
+      optional(XR_KHR_ANDROID_SURFACE_SWAPCHAIN_EXTENSION_NAME, has_surface_);
     optional(XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME, has_cylinder_);
     optional(XR_FB_COMPOSITION_LAYER_IMAGE_LAYOUT_EXTENSION_NAME, has_image_layout_);
     optional(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME, has_refresh_);
     optional(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME, has_perf_);
+    optional(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME, has_pico_controllers_);
 
     XrInstanceCreateInfoAndroidKHR android_info{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
     android_info.applicationVM = vm_;
@@ -366,6 +403,9 @@ class QuestXr {
              XR_VERSION_MAJOR(instance_props.runtimeVersion),
              XR_VERSION_MINOR(instance_props.runtimeVersion),
              XR_VERSION_PATCH(instance_props.runtimeVersion));
+    VR_LOG("extensions: surface swapchain %d, cylinder %d, image layout %d, refresh %d, perf %d, "
+           "pico controllers %d", has_surface_, has_cylinder_, has_image_layout_, has_refresh_,
+           has_perf_, has_pico_controllers_);
 
     XrSystemGetInfo system_info{XR_TYPE_SYSTEM_GET_INFO};
     system_info.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
@@ -373,9 +413,11 @@ class QuestXr {
     if (XR_FAILED(res)) return SetError("no head-mounted display", res);
 
     PFN_xrGetOpenGLESGraphicsRequirementsKHR gles_requirements = nullptr;
-    if (!LoadFunction(instance_, "xrGetOpenGLESGraphicsRequirementsKHR", gles_requirements) ||
-        !LoadFunction(instance_, "xrCreateSwapchainAndroidSurfaceKHR", create_surface_swapchain_))
+    if (!LoadFunction(instance_, "xrGetOpenGLESGraphicsRequirementsKHR", gles_requirements))
       return SetError("runtime is missing required extension functions");
+    if (has_surface_)
+      has_surface_ =
+          LoadFunction(instance_, "xrCreateSwapchainAndroidSurfaceKHR", create_surface_swapchain_);
     if (has_perf_)
       has_perf_ = LoadFunction(instance_, "xrPerfSettingsSetPerformanceLevelEXT", set_perf_level_);
     if (has_refresh_)
@@ -461,13 +503,43 @@ class QuestXr {
       xrStringToPath(instance_, def.path, &path);
       bindings.push_back({*def.action, path});
     }
-    XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-    xrStringToPath(instance_, "/interaction_profiles/oculus/touch_controller",
-                   &suggested.interactionProfile);
-    suggested.suggestedBindings = bindings.data();
-    suggested.countSuggestedBindings = uint32_t(bindings.size());
-    res = xrSuggestInteractionProfileBindings(instance_, &suggested);
-    if (XR_FAILED(res)) return SetError("Touch controller bindings refused", res);
+    // Meta Touch and the PICO controllers have the same buttons (X/Y left,
+    // A/B right, sticks, triggers, grips, menu). A runtime only has to accept
+    // its own controllers' profiles; one refused path refuses the whole
+    // list, so try again without the stick axes, then without menu too.
+    std::vector<XrActionSuggestedBinding> no_axes, no_menu;
+    for (size_t i = 0; i < bindings.size(); ++i) {
+      const std::string p = defs[i].path;
+      const bool axis = p.size() > 2 && (p.compare(p.size() - 2, 2, "/x") == 0 ||
+                                         p.compare(p.size() - 2, 2, "/y") == 0);
+      if (axis) continue;
+      no_axes.push_back(bindings[i]);
+      if (p.find("/menu/") == std::string::npos) no_menu.push_back(bindings[i]);
+    }
+    std::vector<const char*> profiles = {"/interaction_profiles/oculus/touch_controller"};
+    if (has_pico_controllers_) {
+      profiles.push_back("/interaction_profiles/bytedance/pico4_controller");
+      profiles.push_back("/interaction_profiles/bytedance/pico4s_controller");
+      profiles.push_back("/interaction_profiles/bytedance/pico_neo3_controller");
+    }
+    bool any = false;
+    for (const char* profile : profiles) {
+      const char* result = "refused";
+      for (const auto* list : {&bindings, &no_axes, &no_menu}) {
+        XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        xrStringToPath(instance_, profile, &suggested.interactionProfile);
+        suggested.suggestedBindings = list->data();
+        suggested.countSuggestedBindings = uint32_t(list->size());
+        if (XR_SUCCEEDED(xrSuggestInteractionProfileBindings(instance_, &suggested))) {
+          result = list == &bindings ? "set" : list == &no_axes ? "set (without axes)"
+                                                                 : "set (without axes and menu)";
+          any = true;
+          break;
+        }
+      }
+      VR_LOG("controller bindings %s: %s", profile, result);
+    }
+    if (!any) return SetError("no controller bindings accepted");
     XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attach.countActionSets = 1;
     attach.actionSets = &actions_.set;
@@ -477,6 +549,8 @@ class QuestXr {
   }
 
   bool InitScreen(JNIEnv* env) {
+    if (!has_surface_) return InitTextureScreen(env);
+    VR_LOG("display: surface swapchain");
     XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     info.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
     // format, sampleCount, faceCount, arraySize and mipCount stay 0 for a
@@ -492,7 +566,184 @@ class QuestXr {
     return true;
   }
 
+  GLuint CompileShader(GLenum type, const char* source) {
+    const GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint ok = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+      char log[1024] = {};
+      glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
+      VR_ERR("copy shader: %s", log);
+      glDeleteShader(shader);
+      return 0;
+    }
+    return shader;
+  }
+
+  bool JniFailed(const char* what) {
+    if (!env_->ExceptionCheck()) return false;
+    VR_ERR("Java exception in %s", what);
+    env_->ExceptionDescribe();
+    env_->ExceptionClear();
+    return true;
+  }
+
+  // The portable display: a GLES swapchain fed from a SurfaceTexture that
+  // the game's presenter draws into.
+  bool InitTextureScreen(JNIEnv* env) {
+    uint32_t count = 0;
+    xrEnumerateSwapchainFormats(session_, 0, &count, nullptr);
+    std::vector<int64_t> formats(count);
+    xrEnumerateSwapchainFormats(session_, count, &count, formats.data());
+    int64_t format = 0;
+    for (int64_t f : formats)
+      if (f == GL_SRGB8_ALPHA8) format = f;
+    srgb_swapchain_ = format != 0;
+    if (!format)
+      for (int64_t f : formats)
+        if (f == GL_RGBA8) format = f;
+    if (!format && count) format = formats[0];
+    XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    info.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    info.format = format;
+    info.sampleCount = 1;
+    info.width = kSurfaceWidth;
+    info.height = kSurfaceHeight;
+    info.faceCount = 1;
+    info.arraySize = 1;
+    info.mipCount = 1;
+    XrResult res = xrCreateSwapchain(session_, &info, &swapchain_);
+    if (XR_FAILED(res)) return SetError("xrCreateSwapchain failed", res);
+    xrEnumerateSwapchainImages(swapchain_, 0, &count, nullptr);
+    swapchain_images_.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+    res = xrEnumerateSwapchainImages(swapchain_, count, &count,
+                                     reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchain_images_.data()));
+    if (XR_FAILED(res)) return SetError("xrEnumerateSwapchainImages failed", res);
+
+    const GLuint vs = CompileShader(GL_VERTEX_SHADER, kCopyVertexShader);
+    const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kCopyFragmentShader);
+    if (!vs || !fs) return SetError("copy shader failed");
+    copy_program_ = glCreateProgram();
+    glAttachShader(copy_program_, vs);
+    glAttachShader(copy_program_, fs);
+    glLinkProgram(copy_program_);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint linked = 0;
+    glGetProgramiv(copy_program_, GL_LINK_STATUS, &linked);
+    if (!linked) return SetError("copy shader link failed");
+    u_tex_ = glGetUniformLocation(copy_program_, "uTex");
+    u_matrix_ = glGetUniformLocation(copy_program_, "uMatrix");
+    u_decode_ = glGetUniformLocation(copy_program_, "uDecode");
+    glGenVertexArrays(1, &copy_vao_);
+    glGenFramebuffers(1, &copy_fbo_);
+    glGenTextures(1, &oes_texture_);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, oes_texture_);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+
+    jclass st_class = env->FindClass("android/graphics/SurfaceTexture");
+    jclass surface_class = env->FindClass("android/view/Surface");
+    if (JniFailed("FindClass") || !st_class || !surface_class) return SetError("no SurfaceTexture class");
+    const jmethodID st_init = env->GetMethodID(st_class, "<init>", "(I)V");
+    const jmethodID st_size = env->GetMethodID(st_class, "setDefaultBufferSize", "(II)V");
+    st_update_ = env->GetMethodID(st_class, "updateTexImage", "()V");
+    st_matrix_ = env->GetMethodID(st_class, "getTransformMatrix", "([F)V");
+    st_timestamp_ = env->GetMethodID(st_class, "getTimestamp", "()J");
+    st_release_ = env->GetMethodID(st_class, "release", "()V");
+    const jmethodID surface_init =
+        env->GetMethodID(surface_class, "<init>", "(Landroid/graphics/SurfaceTexture;)V");
+    surface_release_ = env->GetMethodID(surface_class, "release", "()V");
+    if (JniFailed("GetMethodID")) return SetError("SurfaceTexture methods missing");
+    jobject st = env->NewObject(st_class, st_init, jint(oes_texture_));
+    if (JniFailed("new SurfaceTexture") || !st) return SetError("new SurfaceTexture failed");
+    env->CallVoidMethod(st, st_size, jint(kSurfaceWidth), jint(kSurfaceHeight));
+    surface_texture_ = env->NewGlobalRef(st);
+    env->DeleteLocalRef(st);
+    jobject surface = env->NewObject(surface_class, surface_init, surface_texture_);
+    if (JniFailed("new Surface") || !surface) return SetError("new Surface failed");
+    surface_object_ = env->NewGlobalRef(surface);
+    env->DeleteLocalRef(surface);
+    jfloatArray matrix = env->NewFloatArray(16);
+    matrix_array_ = static_cast<jfloatArray>(env->NewGlobalRef(matrix));
+    env->DeleteLocalRef(matrix);
+    env->DeleteLocalRef(st_class);
+    env->DeleteLocalRef(surface_class);
+    window_ = ANativeWindow_fromSurface(env, surface_object_);
+    if (!window_) return SetError("ANativeWindow_fromSurface failed");
+    VR_LOG("display: copied from a SurfaceTexture into a %s GLES swapchain (0x%llx)",
+           srgb_swapchain_ ? "sRGB" : "linear", (long long)format);
+    return true;
+  }
+
+  // Texture path, every XR frame: latches the game's newest picture and
+  // copies it into the swapchain when it is new.
+  void CopyFrame() {
+    env_->CallVoidMethod(surface_texture_, st_update_);
+    if (JniFailed("updateTexImage")) return;
+    const jlong stamp = env_->CallLongMethod(surface_texture_, st_timestamp_);
+    if (JniFailed("getTimestamp") || stamp == 0 || (texture_valid_ && stamp == last_stamp_)) return;
+    last_stamp_ = stamp;
+    env_->CallVoidMethod(surface_texture_, st_matrix_, matrix_array_);
+    if (JniFailed("getTransformMatrix")) return;
+    float matrix[16];
+    env_->GetFloatArrayRegion(matrix_array_, 0, 16, matrix);
+
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_FAILED(xrAcquireSwapchainImage(swapchain_, &acquire, &index))) return;
+    XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    if (XR_FAILED(xrWaitSwapchainImage(swapchain_, &wait))) return;
+    glBindFramebuffer(GL_FRAMEBUFFER, copy_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           swapchain_images_[index].image, 0);
+    glViewport(0, 0, kSurfaceWidth, kSurfaceHeight);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(copy_program_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, oes_texture_);
+    glUniform1i(u_tex_, 0);
+    glUniformMatrix4fv(u_matrix_, 1, GL_FALSE, matrix);
+    glUniform1f(u_decode_, srgb_swapchain_ ? 1.0f : 0.0f);
+    glBindVertexArray(copy_vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glFlush();
+    XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    if (XR_SUCCEEDED(xrReleaseSwapchainImage(swapchain_, &release))) {
+      if (!texture_valid_) VR_LOG("first picture copied");
+      texture_valid_ = true;
+    }
+  }
+
   void Destroy() {
+    if (env_ && surface_object_) {
+      env_->CallVoidMethod(surface_object_, surface_release_);
+      JniFailed("Surface.release");
+      env_->DeleteGlobalRef(surface_object_);
+      surface_object_ = nullptr;
+    }
+    if (env_ && surface_texture_) {
+      env_->CallVoidMethod(surface_texture_, st_release_);
+      JniFailed("SurfaceTexture.release");
+      env_->DeleteGlobalRef(surface_texture_);
+      surface_texture_ = nullptr;
+    }
+    if (env_ && matrix_array_) {
+      env_->DeleteGlobalRef(matrix_array_);
+      matrix_array_ = nullptr;
+    }
     if (swapchain_ != XR_NULL_HANDLE) xrDestroySwapchain(swapchain_);
     if (local_space_ != XR_NULL_HANDLE) xrDestroySpace(local_space_);
     if (view_space_ != XR_NULL_HANDLE) xrDestroySpace(view_space_);
@@ -784,6 +1035,8 @@ class QuestXr {
     if (XR_FAILED(xrBeginFrame(session_, &begin_info))) return;
     if (focused_) UpdateInput();
     PollTuning();
+    if (!has_surface_) CopyFrame();
+    const bool picture = has_surface_ || texture_valid_;
 
     // The compositor samples a surface swapchain bottom-up; the presenter
     // writes the top row first, so flip it there.
@@ -793,7 +1046,7 @@ class QuestXr {
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     const XrCompositionLayerBaseHeader* layers[1] = {};
     uint32_t layer_count = 0;
-    if (frame.shouldRender) {
+    if (frame.shouldRender && picture) {
       // Place once more 4 s after the start, when the player sits still.
       if (placed_ && !replaced_ && first_place_ &&
           frame.predictedDisplayTime - first_place_ > 4000000000LL) {
@@ -844,7 +1097,7 @@ class QuestXr {
         const XrVector3f ahead = QuatRotate(pose.orientation, {0.0f, 0.0f, -d});
         pose.position = {pose.position.x + ahead.x, pose.position.y + ahead.y,
                          pose.position.z + ahead.z};
-        if (has_image_layout_) quad.next = &flip;
+        if (has_surface_ && has_image_layout_) quad.next = &flip;
         quad.space = local_space_;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
         quad.subImage.swapchain = swapchain_;
@@ -858,7 +1111,7 @@ class QuestXr {
         sub.imageRect.extent = {kSurfaceWidth, kSurfaceHeight};
         const float width = PropertyFloat("debug.fhvr.screenw", kScreenWidthM);
         if (has_cylinder_) {
-          if (has_image_layout_) cylinder.next = &flip;
+          if (has_surface_ && has_image_layout_) cylinder.next = &flip;
           cylinder.space = local_space_;
           cylinder.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
           cylinder.subImage = sub;
@@ -868,7 +1121,7 @@ class QuestXr {
           cylinder.aspectRatio = float(kSurfaceWidth) / float(kSurfaceHeight);
           layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cylinder);
         } else {
-          if (has_image_layout_) quad.next = &flip;
+          if (has_surface_ && has_image_layout_) quad.next = &flip;
           quad.space = local_space_;
           quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
           quad.subImage = sub;
@@ -906,6 +1159,18 @@ class QuestXr {
   PFN_xrEnumerateDisplayRefreshRatesFB enumerate_refresh_ = nullptr;
   PFN_xrRequestDisplayRefreshRateFB request_refresh_ = nullptr;
   bool has_cylinder_ = false, has_image_layout_ = false, has_refresh_ = false, has_perf_ = false;
+  bool has_surface_ = false, has_pico_controllers_ = false;
+  // Texture path (no surface swapchain).
+  JNIEnv* env_ = nullptr;
+  std::vector<XrSwapchainImageOpenGLESKHR> swapchain_images_;
+  bool srgb_swapchain_ = false, texture_valid_ = false;
+  jlong last_stamp_ = 0;
+  GLuint copy_program_ = 0, copy_vao_ = 0, copy_fbo_ = 0, oes_texture_ = 0;
+  GLint u_tex_ = -1, u_matrix_ = -1, u_decode_ = -1;
+  jobject surface_texture_ = nullptr, surface_object_ = nullptr;
+  jfloatArray matrix_array_ = nullptr;
+  jmethodID st_update_ = nullptr, st_matrix_ = nullptr, st_timestamp_ = nullptr,
+            st_release_ = nullptr, surface_release_ = nullptr;
   bool running_ = false, exit_ = false, focused_ = false;
   bool placed_ = false, replaced_ = false;
   XrTime first_place_ = 0;

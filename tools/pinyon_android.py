@@ -537,7 +537,8 @@ def build(args: argparse.Namespace) -> int:
         run([tools.cmake, "--preset", preset(args), *sdk,
              f"-DCMAKE_MAKE_PROGRAM={tools.ninja}", f"-DPYTHON_EXECUTABLE={sys.executable}",
              f"-DPython3_EXECUTABLE={sys.executable}"], cwd=ROOT, env=environment)
-    command = [tools.cmake, "--build", directory, "--target", "pinyon_shift"]
+    # fhvr_shell: the setup and build screens on a VR panel (src/quest/vr_shell.cpp).
+    command = [tools.cmake, "--build", directory, "--target", "pinyon_shift", "fhvr_shell"]
     if not shell:
         # libadrenotools' hooks, which nothing links (they are loaded from
         # the native library folder for a custom GPU driver); the shell
@@ -865,6 +866,10 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
     openxr_loader = ROOT / "thirdparty" / "openxr" / "lib" / CONFIG["abi"] / "libopenxr_loader.so"
     if openxr_loader.is_file():
         libraries.append(openxr_loader)
+        panel = [path for path in directory.glob("**/libfhvr_shell.so") if "CMakeFiles" not in path.parts]
+        if not panel:
+            raise AndroidError(f"libfhvr_shell.so is not built in {directory}")
+        libraries.append(max(panel, key=lambda path: path.stat().st_mtime))
     libraries.append(tools.libcxx)
 
     staging = WORK / "package"

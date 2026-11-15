@@ -82,7 +82,20 @@ public class BuildActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        VrShell.resume(this);
+    }
+
+    @Override
+    protected void onPause() {
+        VrShell.pause(this);
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
+        VrShell.detach(this);
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -145,7 +158,8 @@ public class BuildActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         buttonParams.topMargin = dp(12);
         column.addView(retryButton, buttonParams);
-        setContentView(column);
+        // On a VR panel (VrShell) on Meta Quest and PICO.
+        VrShell.attach(this, column);
     }
 
     private void start() {
