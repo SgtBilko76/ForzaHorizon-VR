@@ -1,7 +1,7 @@
 # ForzaHorizon-VR
 
-*Forza Horizon* (Xbox 360, 2012) as a standalone VR game for Meta Quest 3,
-built on [Pinyon Shift](https://github.com/arcanite24/pinyon-shift), which
+*Forza Horizon* (Xbox 360, 2012) as a standalone VR game for Meta Quest 3 and
+PICO 4 Ultra (one APK; PICO untested so far), built on [Pinyon Shift](https://github.com/arcanite24/pinyon-shift), which
 statically recompiles the game's own code to run natively. Menus, the map and
 the chase cameras are on a large curved screen; the cockpit and hood cameras
 are head-tracked.
@@ -26,6 +26,17 @@ The headset does it once after installing or updating; later starts take
 the usual few seconds. If the headset sleeps or the app is closed during the
 build, it continues where it stopped. About 4 GB must be free while it runs;
 the temporary files are deleted at the end.
+
+## Meta Quest and PICO
+
+The same APK runs on both. Where the runtime lacks Meta's
+`XR_KHR_android_surface_swapchain` (PICO), the game's picture goes through a
+SurfaceTexture copied into a standard GLES swapchain
+(`setprop debug.fhvr.texpath 1` forces that path on Quest for testing); the
+PICO controllers are bound through `XR_BD_controller_interaction`. A PICO VR
+app can't show flat windows, so the setup and build screens run on an OpenXR
+VR panel on both headsets (`src/quest/vr_shell.cpp`, `VrShell.java`).
+The older PICO 4 / Neo 3 lack Vulkan 1.3 and Android 13 and are not supported.
 
 ## How it is built
 
