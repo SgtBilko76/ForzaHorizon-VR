@@ -538,7 +538,8 @@ def build(args: argparse.Namespace) -> int:
              f"-DCMAKE_MAKE_PROGRAM={tools.ninja}", f"-DPYTHON_EXECUTABLE={sys.executable}",
              f"-DPython3_EXECUTABLE={sys.executable}"], cwd=ROOT, env=environment)
     # fhvr_shell: the setup and build screens on a VR panel (src/quest/vr_shell.cpp).
-    command = [tools.cmake, "--build", directory, "--target", "pinyon_shift", "fhvr_shell"]
+    # fhvr_archive: the runtime's LZX decoder for VrMods.java.
+    command = [tools.cmake, "--build", directory, "--target", "pinyon_shift", "fhvr_shell", "fhvr_archive"]
     if not shell:
         # libadrenotools' hooks, which nothing links (they are loaded from
         # the native library folder for a custom GPU driver); the shell
@@ -939,10 +940,11 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
     openxr_loader = ROOT / "thirdparty" / "openxr" / "lib" / CONFIG["abi"] / "libopenxr_loader.so"
     if openxr_loader.is_file():
         libraries.append(openxr_loader)
-        panel = [path for path in directory.glob("**/libfhvr_shell.so") if "CMakeFiles" not in path.parts]
-        if not panel:
-            raise AndroidError(f"libfhvr_shell.so is not built in {directory}")
-        libraries.append(max(panel, key=lambda path: path.stat().st_mtime))
+        for name in ("libfhvr_shell.so", "libfhvr_archive.so"):
+            built = [path for path in directory.glob(f"**/{name}") if "CMakeFiles" not in path.parts]
+            if not built:
+                raise AndroidError(f"{name} is not built in {directory}")
+            libraries.append(max(built, key=lambda path: path.stat().st_mtime))
     libraries.append(tools.libcxx)
 
     staging = WORK / "package"
@@ -999,6 +1001,12 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
             for path, name in buildkit_files():
                 apk.write(path, name)
             apk.writestr("assets/" + "game-files.txt", game_files_list())
+            # The immersive camera mod (Pinyon Shift's own) for the VR head
+            # view; VrMods.java builds its archive patch from the player's files.
+            camera_mod = ROOT / "mods_src" / "builtin" / "immersive_camera"
+            for path in sorted(camera_mod.rglob("*")):
+                if path.is_file():
+                    apk.write(path, "assets/mods/immersive_camera/" + path.relative_to(camera_mod).as_posix())
             inputs = {library.name: library.read_bytes() for library in stripped
                       if library.name in GAME_BUILD_INPUTS}
             inputs.update({path.name: path.read_bytes() for path, _ in buildkit_files()
