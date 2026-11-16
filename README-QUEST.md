@@ -27,6 +27,17 @@ the usual few seconds. If the headset sleeps or the app is closed during the
 build, it continues where it stopped. About 4 GB must be free while it runs;
 the temporary files are deleted at the end.
 
+## Game file check
+
+Before building and before every start, `GameCheck.java` compares the
+player's files with the supported disc, Forza Horizon US (MS-2505): the
+three executables by SHA-256 and every other file by size, from
+`config/supported-extracted-ms-2505.json` (the APK carries only names,
+sizes and hashes). Another release is refused with a clear message, title
+update v4 can be moved aside, and missing files can be copied again or
+skipped. The build is redone only when what the game links against
+changes (`config/android-game-build-ids.json`), not with every app update.
+
 ## Meta Quest and PICO
 
 The same APK runs on both. Where the runtime lacks Meta's
