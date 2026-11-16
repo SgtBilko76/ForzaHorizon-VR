@@ -107,6 +107,9 @@ public class PinyonShiftActivity extends SDLActivity {
             setDefaultEnvironment("PINYON_SHIFT_RALLY_PREPARED", "1");
         }
         applyPendingMods(base);
+        // The VR camera mods the head-tracked view needs, built from the
+        // player's own game files (Quest release).
+        if (!buildMissing) VrMods.install(this, base);
         // The build's provenance, packaged as an asset, for logs and crash
         // reports (the game reads it beside the executable elsewhere).
         File manifest = new File(getFilesDir(), "pinyon_shift_build.json");

@@ -477,6 +477,11 @@ if(ANDROID AND PINYON_SHIFT_QUEST_VR AND TARGET pinyon_shift)
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openxr/include)
     target_link_libraries(fhvr_shell PRIVATE pinyon_openxr_loader EGL GLESv3 android log)
     target_link_options(fhvr_shell PRIVATE "-Wl,-z,max-page-size=16384")
+    # The runtime's LZX decoder for the app's Java code (VrMods.java builds
+    # the VR camera mod from the player's own camera.zip on the headset).
+    add_library(fhvr_archive SHARED src/quest/fh_archive_jni.cpp)
+    target_link_libraries(fhvr_archive PRIVATE rex::runtime)
+    target_link_options(fhvr_archive PRIVATE "-Wl,-z,max-page-size=16384")
 endif()
 
 # The mod ABI header (NP-7) and the TOML parser mod.toml is read with.
