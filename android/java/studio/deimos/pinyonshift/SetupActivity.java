@@ -14,8 +14,6 @@ import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -60,12 +58,8 @@ public class SetupActivity extends Activity implements View.OnClickListener {
     private static final int MUTED = Color.rgb(159, 178, 165);
     // Game files being copied: the game does not start from a partial copy.
     private static final String INCOMPLETE = "game/.copy-incomplete";
-    // Arguments the game activity adds at every start (the experimental GPU fallback).
+    // Arguments the game activity adds at every start (one per line).
     static final String ARGUMENTS_FILE = "state/config/android-arguments.txt";
-    // Experimental, opt-in: accept GPUs without vertexPipelineStoresAndAtomics
-    // (Mali), skipping vertex shader memory export.
-    private static final String[] VERTEX_STORES_FALLBACK = {
-            "--vulkan_require_vertex_pipeline_stores_and_atomics=false"};
     // The app shortcut opens this screen with the game installed.
     private static final String SETUP_ACTION = "studio.deimos.pinyonshift.SETUP";
     // The game's settings, where enabled_mods lives.
@@ -88,7 +82,6 @@ public class SetupActivity extends Activity implements View.OnClickListener {
     private Button folderButton;
     private Button deleteImageButton;
     private Button playButton;
-    private CheckBox vertexStoresCheck;
     private Uri importedImage;
     private volatile boolean busy;
 
@@ -175,14 +168,6 @@ public class SetupActivity extends Activity implements View.OnClickListener {
 
         text(column, "ForzaHorizon-VR", 26, Color.WHITE, true);
         intro = text(column, "", 15, MUTED, false);
-        // No Qualcomm kernel GPU driver: probably Mali (Tensor, Exynos, Dimensity), which
-        // the game refuses at start unless the opt-in at the bottom is ticked.
-        if (!new File("/sys/class/kgsl/kgsl-3d0").exists() && !hasArguments(VERTEX_STORES_FALLBACK)) {
-            text(column, "This device does not look like a Snapdragon (Adreno). If the game closes at "
-                    + "start, scroll down to Experimental and tick \"Allow GPUs without vertex "
-                    + "shader stores\", then try again.", 14, ACCENT, false)
-                    .setPadding(0, dp(12), 0, 0);
-        }
 
         text(column, "From your disc image (.iso)", 18, ACCENT, true).setPadding(0, dp(16), 0, 0);
         text(column, "Copy the .iso file you made from your own Forza Horizon disc (Xbox 360, US release) "
@@ -208,26 +193,6 @@ public class SetupActivity extends Activity implements View.OnClickListener {
                 + "folder to the headset and choose it here.", 14, MUTED, false);
         folderButton = button(column, "Choose folder…");
 
-        text(column, "Experimental", 18, ACCENT, true).setPadding(0, dp(20), 0, 0);
-        text(column, "For GPUs the game closes on at start, such as Mali (Google Tensor, Exynos, "
-                + "Dimensity). Vertex shader memory writes are skipped, so some effects or results "
-                + "may differ. Leave it off on Snapdragon and on VR headsets.",
-                14, MUTED, false);
-        vertexStoresCheck = new CheckBox(this);
-        vertexStoresCheck.setTextColor(Color.WHITE);
-        vertexStoresCheck.setText("Allow GPUs without vertex shader stores");
-        vertexStoresCheck.setChecked(hasArguments(VERTEX_STORES_FALLBACK));
-        vertexStoresCheck.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton view, boolean checked) {
-                try {
-                    setArguments(VERTEX_STORES_FALLBACK, checked);
-                } catch (IOException error) {
-                    Log.w(TAG, "launch arguments not written", error);
-                }
-            }
-        });
-        column.addView(vertexStoresCheck);
 
         playButton = button(column, "Play");
         playButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
@@ -625,44 +590,7 @@ public class SetupActivity extends Activity implements View.OnClickListener {
         if (!temp.renameTo(file)) throw new IOException("cannot write " + file);
     }
 
-    // ---- Launch arguments and mods ------------------------------------------
-
-    private boolean hasArguments(String[] flags) {
-        File file = new File(base, ARGUMENTS_FILE);
-        if (!file.isFile()) return false;
-        try (InputStream in = new FileInputStream(file)) {
-            List<String> lines = new ArrayList<>();
-            for (String line : readAll(in).split("\n")) lines.add(line.trim());
-            for (String flag : flags) {
-                if (!lines.contains(flag)) return false;
-            }
-            return true;
-        } catch (IOException error) {
-            return false;
-        }
-    }
-
-    // Adds or removes flags in the arguments file, keeping its other lines.
-    private void setArguments(String[] flags, boolean on) throws IOException {
-        File file = new File(base, ARGUMENTS_FILE);
-        file.getParentFile().mkdirs();
-        List<String> lines = new ArrayList<>();
-        if (file.isFile()) {
-            try (InputStream in = new FileInputStream(file)) {
-                for (String line : readAll(in).split("\n")) {
-                    String trimmed = line.trim();
-                    if (trimmed.isEmpty()) continue;
-                    boolean flag = false;
-                    for (String known : flags) flag |= trimmed.equals(known);
-                    if (!flag) lines.add(trimmed);
-                }
-            }
-        }
-        if (on) Collections.addAll(lines, flags);
-        try (OutputStream out = new FileOutputStream(file)) {
-            out.write((String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8));
-        }
-    }
+    // ---- Mods ---------------------------------------------------------------
 
     private static final Pattern ENABLED_MODS =
             Pattern.compile("^enabled_mods[ \\t]*=[ \\t]*\"([^\"]*)\"[ \\t]*$", Pattern.MULTILINE);
