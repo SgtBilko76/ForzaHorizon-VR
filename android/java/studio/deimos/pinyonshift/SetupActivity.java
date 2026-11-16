@@ -73,6 +73,8 @@ public class SetupActivity extends Activity implements View.OnClickListener {
     // enabled_mods to set once the game has written its settings file,
     // applied by the game activity.
     static final String PENDING_MODS_FILE = "state/config/pending-enabled-mods.txt";
+    // A disc image's executables, unpacked aside to be checked.
+    private static final String STAGING = "game/.image-check";
     // The disc's system update folder: not part of the game.
     private static final String SYSTEM_UPDATE = "$SystemUpdate";
     // Free space kept on top of the copy.
@@ -362,67 +364,94 @@ public class SetupActivity extends Activity implements View.OnClickListener {
                  FileChannel channel = in.getChannel()) {
                 XisoReader disc = XisoReader.open(channel);
                 List<XisoReader.Entry> files = disc.files(Collections.singleton(SYSTEM_UPDATE));
-                // The executables first: a disc the game can't be built from is
-                // refused after seconds, not after copying 7 GB.
-                List<XisoReader.Entry> ordered = new ArrayList<>();
+                List<XisoReader.Entry> executables = new ArrayList<>();
                 List<XisoReader.Entry> rest = new ArrayList<>();
-                boolean game = false;
                 for (XisoReader.Entry entry : files) {
                     boolean executable = !entry.path.contains("/") && entry.path.endsWith(".xex");
-                    game |= entry.path.equals("default.xex");
-                    (executable ? ordered : rest).add(entry);
+                    (executable ? executables : rest).add(entry);
                 }
-                if (!game) throw new IOException("this disc image holds no game (no default.xex)");
-                int executables = ordered.size();
-                ordered.addAll(rest);
-                long total = 0, missing = 0;
-                for (XisoReader.Entry entry : ordered) {
-                    total += entry.size;
-                    if (destination("game/base/" + entry.path).length() != entry.size) missing += entry.size;
-                }
-                if (missing > base.getUsableSpace() - SPARE) {
-                    throw new IOException("not enough free space: " + size(missing) + " needed, "
-                            + size(base.getUsableSpace()) + " free");
-                }
-                markIncomplete();
-                long done = 0;
-                final long started = System.currentTimeMillis();
-                for (int i = 0; i < ordered.size(); i++) {
-                    final XisoReader.Entry entry = ordered.get(i);
-                    File target = destination("game/base/" + entry.path);
-                    if (target.length() != entry.size) {
-                        File part = new File(target.getPath() + ".part");
-                        target.getParentFile().mkdirs();
-                        final long before = done;
-                        final int number = i + 1;
-                        final int count = ordered.size();
-                        final long sum = total;
-                        disc.extract(entry, part, new XisoReader.Progress() {
-                            @Override
-                            public void written(long bytes) {
-                                report(before + bytes, sum, number, count, started);
-                            }
-                        });
-                        replace(part, target, entry.size, entry.path);
+                // The executables first, into a folder aside: a disc the game
+                // can't be built from is refused after seconds, and before it
+                // replaces anything of a game already on the device.
+                File staging = new File(base, STAGING);
+                deleteTree(staging);
+                staging.mkdirs();
+                try {
+                    for (XisoReader.Entry entry : executables) {
+                        progressLater("Checking " + entry.path + "…");
+                        disc.extract(entry, new File(staging, entry.path), null);
                     }
-                    done += entry.size;
-                    if (i == executables - 1) checkDisc();
+                    if (!new File(staging, "default.xex").isFile()) {
+                        throw new IOException("this disc image is not an Xbox 360 game (no default.xex)");
+                    }
+                    List<String> wrong = GameCheck.wrongExecutables(this, staging);
+                    if (wrong != null && !wrong.isEmpty()) {
+                        Log.w(TAG, "disc image refused: " + wrong);
+                        throw new IOException("this is not the supported disc. ForzaHorizon-VR needs Forza Horizon "
+                                + "for Xbox 360, US release (MS-2505); other games and releases contain "
+                                + "different program code. Nothing on this device was changed");
+                    }
+                    long total = 0, missing = 0;
+                    for (XisoReader.Entry entry : files) {
+                        total += entry.size;
+                        if (destination("game/base/" + entry.path).length() != entry.size) missing += entry.size;
+                    }
+                    if (missing > base.getUsableSpace() - SPARE) {
+                        throw new IOException("not enough free space: " + size(missing) + " needed, "
+                                + size(base.getUsableSpace()) + " free");
+                    }
+                    markIncomplete();
+                    for (XisoReader.Entry entry : executables) {
+                        File target = destination("game/base/" + entry.path);
+                        target.getParentFile().mkdirs();
+                        replace(new File(staging, entry.path), target, entry.size, entry.path);
+                    }
+                    long done = 0;
+                    for (XisoReader.Entry entry : executables) done += entry.size;
+                    final long started = System.currentTimeMillis();
+                    for (int i = 0; i < rest.size(); i++) {
+                        final XisoReader.Entry entry = rest.get(i);
+                        File target = destination("game/base/" + entry.path);
+                        if (target.length() != entry.size) {
+                            File part = new File(target.getPath() + ".part");
+                            target.getParentFile().mkdirs();
+                            final long before = done;
+                            final int number = executables.size() + i + 1;
+                            final int count = files.size();
+                            final long sum = total;
+                            disc.extract(entry, part, new XisoReader.Progress() {
+                                @Override
+                                public void written(long bytes) {
+                                    report(before + bytes, sum, number, count, started);
+                                }
+                            });
+                            replace(part, target, entry.size, entry.path);
+                        }
+                        done += entry.size;
+                    }
+                    new File(base, INCOMPLETE).delete();
+                } finally {
+                    deleteTree(staging);
                 }
-                new File(base, INCOMPLETE).delete();
             }
         }
     }
 
-    // After the executables: they must be the supported disc's, byte for byte.
-    private void checkDisc() throws IOException {
-        GameCheck.Problem problem = GameCheck.find(this);
-        if (problem != null && problem.kind == GameCheck.Kind.WRONG_DISC) {
-            for (String name : new String[] {"default.xex", "SpeechFacade_default.xex", "XMediaFacade_default.xex"}) {
-                new File(base, "game/base/" + name).delete();
+    private void progressLater(final String text) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                progressText.setText(text);
             }
-            throw new IOException("this is not the supported disc. ForzaHorizon-VR needs Forza Horizon for "
-                    + "Xbox 360, US release (MS-2505); other releases contain different program code");
+        });
+    }
+
+    private static void deleteTree(File file) {
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) deleteTree(child);
         }
+        file.delete();
     }
 
     // ---- Copy from a folder -----------------------------------------------

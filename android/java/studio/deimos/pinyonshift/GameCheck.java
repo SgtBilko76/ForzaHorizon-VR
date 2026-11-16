@@ -98,6 +98,24 @@ final class GameCheck {
         }
     }
 
+    /**
+     * The executables in folder that are not the supported disc's (missing or
+     * different), empty when they all match; null when this package carries
+     * no list (a PC build). For a disc image's executables unpacked aside
+     * before they replace anything.
+     */
+    static List<String> wrongExecutables(Context context, File folder) {
+        Expected expected = expected(context);
+        if (expected == null) return null;
+        List<String> wrong = new ArrayList<>();
+        for (Map.Entry<String, String> entry : expected.hashes.entrySet()) {
+            File file = new File(folder, entry.getKey());
+            if (!file.isFile()) wrong.add(entry.getKey() + " is missing");
+            else if (!entry.getValue().equals(sha256(file))) wrong.add(entry.getKey() + " is different");
+        }
+        return wrong;
+    }
+
     /** The first problem with the game files, or null when they are fine. */
     static Problem find(Context context) {
         Expected expected = expected(context);
