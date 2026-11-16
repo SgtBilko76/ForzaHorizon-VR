@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
@@ -69,6 +70,8 @@ public class SetupActivity extends Activity implements View.OnClickListener {
     static final String PENDING_MODS_FILE = "state/config/pending-enabled-mods.txt";
     // A disc image's executables, unpacked aside to be checked.
     private static final String STAGING = "game/.image-check";
+    // The port's page on the website.
+    private static final String WEBSITE = "https://portroyale.online/forzahorizon.html";
     // The disc's system update folder: not part of the game.
     private static final String SYSTEM_UPDATE = "$SystemUpdate";
     // Free space kept on top of the copy.
@@ -167,6 +170,19 @@ public class SetupActivity extends Activity implements View.OnClickListener {
         scroll.addView(column);
 
         text(column, "ForzaHorizon-VR", 26, Color.WHITE, true);
+        // The port's page: install guide, updates and help.
+        TextView site = text(column, "portroyale.online: guide, updates and help", 15, ACCENT, false);
+        site.setPaintFlags(site.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+        site.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(WEBSITE)));
+                } catch (Exception error) {
+                    progressText.setText("No browser found. The page is " + WEBSITE);
+                }
+            }
+        });
         intro = text(column, "", 15, MUTED, false);
 
         text(column, "From your disc image (.iso)", 18, ACCENT, true).setPadding(0, dp(16), 0, 0);
