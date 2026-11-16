@@ -777,6 +777,74 @@ def quest_release() -> bool:
     return os.environ.get("PINYON_QUEST_RELEASE") == "1"
 
 
+# What the headset's game build compiles and links against: the runtime
+# libraries in the APK and the build kit. GameBuild rebuilds the game only
+# when this changes; config/android-game-build-ids.json remembers it per
+# version code, so an update with the same inputs keeps the player's build.
+GAME_BUILD_INPUTS = ("librexruntime.so", "libc++_shared.so")
+GAME_BUILD_IDS = ROOT / "config" / "android-game-build-ids.json"
+
+
+def exported_symbols(library: bytes, nm: Path) -> bytes:
+    """The defined dynamic symbols, sorted: what the game's libraries link
+    against. The runtime's bytes change with every build (it embeds the build
+    time); its exports and the kit's headers only change with its interface."""
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".so") as file:
+        file.write(library)
+        file.flush()
+        listing = subprocess.run([str(nm), "-D", "--defined-only", "--format=just-symbols", file.name],
+                                 capture_output=True, text=True, check=True).stdout
+    return "\n".join(sorted(set(listing.split()))).encode()
+
+
+def game_build_id(inputs: dict[str, bytes], kit, nm: Path) -> str:
+    """inputs: the runtime libraries (GAME_BUILD_INPUTS), compared by their
+    exports, and the build tools packaged as native libraries, compared byte
+    for byte; kit: the build kit archive (headers, link inputs, build.sh)."""
+    digest = hashlib.sha256()
+    for name in GAME_BUILD_INPUTS:
+        if name not in inputs:
+            raise AndroidError(f"{name} is not packaged")
+    for name in sorted(inputs):
+        data = exported_symbols(inputs[name], nm) if name in GAME_BUILD_INPUTS else inputs[name]
+        digest.update(f"{name} {hashlib.sha256(data).hexdigest()}\n".encode())
+    with zipfile.ZipFile(kit) as archive:
+        for info in sorted(archive.infolist(), key=lambda info: info.filename):
+            digest.update(f"kit {info.filename} {info.CRC:08x} {info.file_size}\n".encode())
+    return digest.hexdigest()[:32]
+
+
+def game_build_id_asset(inputs: dict[str, bytes], kit: Path, nm: Path) -> str:
+    current = game_build_id(inputs, kit, nm)
+    _, code = release_version()
+    ids = json.loads(GAME_BUILD_IDS.read_text(encoding="utf-8")) if GAME_BUILD_IDS.is_file() else {}
+    ids[str(code)] = current
+    GAME_BUILD_IDS.write_text(json.dumps(ids, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    lines = [f"id {current}"]
+    lines += [f"compatible {other}" for other, value in sorted(ids.items())
+              if value == current and other != str(code)]
+    return "\n".join(lines) + "\n"
+
+
+def game_files_list() -> str:
+    """assets/game-files.txt for the app's GameCheck: the supported disc's
+    executables by SHA-256 and every extracted file by size (names, sizes and
+    hashes only, no game data), from config/supported-extracted-ms-2505.json."""
+    pinned = json.loads((ROOT / "config" / "supported-extracted-ms-2505.json").read_text(encoding="utf-8"))
+    executables = {"default.xex", "SpeechFacade_default.xex", "XMediaFacade_default.xex"}
+    lines = [f"# {pinned['dump_id']}: sha256 <hash> <path> / size <bytes> <path>"]
+    files = [(entry["guest_path"].replace("\\", "/"), entry) for entry in pinned["files"]]
+    for path, entry in files:
+        if path in executables:
+            lines.append(f"sha256 {entry['sha256']} {path}")
+    if sum(line.startswith("sha256 ") for line in lines) != len(executables):
+        raise AndroidError("the supported dump does not pin the three executables")
+    for path, entry in files:
+        lines.append(f"size {entry['size_bytes']} {path}")
+    return "\n".join(lines) + "\n"
+
+
 def buildkit_files() -> list[tuple[Path, str]]:
     archive = BUILDKIT / "buildkit.zip"
     tools = sorted((BUILDKIT / "lib").glob("lib*.so")) if (BUILDKIT / "lib").is_dir() else []
@@ -925,6 +993,14 @@ def package(args: argparse.Namespace, tools: Tools | None = None) -> int:
         if quest_release():
             for path, name in buildkit_files():
                 apk.write(path, name)
+            apk.writestr("assets/" + "game-files.txt", game_files_list())
+            inputs = {library.name: library.read_bytes() for library in stripped
+                      if library.name in GAME_BUILD_INPUTS}
+            inputs.update({path.name: path.read_bytes() for path, _ in buildkit_files()
+                           if path.suffix == ".so"})
+            apk.writestr("assets/game-build-id.txt",
+                         game_build_id_asset(inputs, BUILDKIT / "buildkit.zip",
+                                             tools.llvm_bin / _exe("llvm-nm")))
         else:
             for path, name in bundled_shader_cache_files():
                 apk.write(path, name)

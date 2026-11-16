@@ -67,7 +67,7 @@ public class BuildActivity extends Activity {
     private File gameBase;
     private TextView stageText, detailText, errorText;
     private ProgressBar progress;
-    private Button retryButton;
+    private Button retryButton, continueButton, setupButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -77,8 +77,72 @@ public class BuildActivity extends Activity {
         File base = external != null ? external : getFilesDir();
         gameBase = new File(base, "game/base");
         buildLayout();
+        checkAndStart();
+    }
+
+    // ---- The game files ---------------------------------------------------
+
+    private GameCheck.Problem problem;
+
+    // Checks the game files (GameCheck) unless a build already runs in this
+    // process, then builds, or starts the game when nothing is to build.
+    private void checkAndStart() {
+        boolean running;
+        synchronized (BuildActivity.class) {
+            running = runner != null && runner.isAlive();
+        }
+        problem = running ? null : GameCheck.find(this);
+        if (problem != null) {
+            showProblem();
+            return;
+        }
+        hideProblem();
+        if (!running && !GameBuild.needed(this, gameBase)) {
+            startGame();
+            return;
+        }
         start();
+        handler.removeCallbacks(refresher);
         handler.post(refresher);
+    }
+
+    private void showProblem() {
+        handler.removeCallbacks(refresher);
+        stageText.setText(problem.title);
+        progress.setVisibility(View.GONE);
+        detailText.setText(problem.message);
+        errorText.setVisibility(View.GONE);
+        retryButton.setVisibility(View.GONE);
+        continueButton.setText(problem.kind == GameCheck.Kind.TITLE_UPDATE
+                ? "Continue without the title update" : "Start anyway");
+        continueButton.setVisibility(problem.canContinue() ? View.VISIBLE : View.GONE);
+        setupButton.setVisibility(View.VISIBLE);
+    }
+
+    private void hideProblem() {
+        progress.setVisibility(View.VISIBLE);
+        continueButton.setVisibility(View.GONE);
+        setupButton.setVisibility(View.GONE);
+    }
+
+    private void continueAnyway() {
+        if (problem == null) return;
+        try {
+            GameCheck.resolve(this, problem);
+        } catch (IOException error) {
+            Log.e(TAG, "game check answer failed", error);
+            errorText.setText("That did not work: " + error.getMessage());
+            errorText.setVisibility(View.VISIBLE);
+            return;
+        }
+        checkAndStart();
+    }
+
+    private void openSetup() {
+        startActivity(new Intent(this, SetupActivity.class));
+        finish();
+        // This is the build's own process; the setup screen runs in the main one.
+        new Handler(Looper.getMainLooper()).postDelayed(EXIT, 1500);
     }
 
     @Override
@@ -158,6 +222,33 @@ public class BuildActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         buttonParams.topMargin = dp(12);
         column.addView(retryButton, buttonParams);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        continueButton = new Button(this);
+        continueButton.setAllCaps(false);
+        continueButton.setVisibility(View.GONE);
+        continueButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                continueAnyway();
+            }
+        });
+        setupButton = new Button(this);
+        setupButton.setText("Open the setup screen");
+        setupButton.setAllCaps(false);
+        setupButton.setVisibility(View.GONE);
+        setupButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                openSetup();
+            }
+        });
+        LinearLayout.LayoutParams rowButton = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rowButton.rightMargin = dp(12);
+        row.addView(setupButton, rowButton);
+        row.addView(continueButton, rowButton);
+        column.addView(row, buttonParams);
         // On a VR panel (VrShell) on Meta Quest and PICO.
         VrShell.attach(this, column);
     }

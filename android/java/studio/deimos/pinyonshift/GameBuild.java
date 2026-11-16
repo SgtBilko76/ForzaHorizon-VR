@@ -67,9 +67,45 @@ final class GameBuild {
         }
     }
 
-    /** What a finished build was made from: this app version and this disc. */
+    static final String BUILD_ID_ASSET = "game-build-id.txt";
+
+    // assets/game-build-id.txt (tools/pinyon_android.py): "id <hash>" of what
+    // the game's libraries are built and linked against (the runtime and the
+    // build kit), and "compatible <version code>" lines for earlier app
+    // versions whose builds used exactly the same, so an update that only
+    // changes the app's screens does not rebuild the game.
+    private static String[] buildId(Context context) {
+        try (InputStream in = context.getAssets().open(BUILD_ID_ASSET)) {
+            byte[] data = new byte[1 << 14];
+            int length = 0;
+            for (int read; length < data.length && (read = in.read(data, length, data.length - length)) > 0; ) {
+                length += read;
+            }
+            return new String(data, 0, length, StandardCharsets.UTF_8).trim().split("\n");
+        } catch (IOException error) {
+            return new String[0];
+        }
+    }
+
+    /** What a finished build was made from: this runtime and kit, and this disc. */
     static String expectedStamp(Context context, File gameBase) {
-        return versionCode(context) + " " + new File(gameBase, "default.xex").length();
+        String size = Long.toString(new File(gameBase, "default.xex").length());
+        for (String line : buildId(context)) {
+            if (line.startsWith("id ")) return line.trim() + " " + size;
+        }
+        return versionCode(context) + " " + size;
+    }
+
+    // A build an earlier app version stamped with its version code, whose
+    // runtime and kit this version still has.
+    private static boolean compatibleStamp(Context context, File gameBase, String stamp) {
+        String[] fields = stamp.split(" ");
+        if (fields.length != 2) return false;
+        if (!fields[1].equals(Long.toString(new File(gameBase, "default.xex").length()))) return false;
+        for (String line : buildId(context)) {
+            if (line.trim().equals("compatible " + fields[0])) return true;
+        }
+        return false;
     }
 
     static File stampFile(Context context) {
@@ -82,7 +118,17 @@ final class GameBuild {
         for (String name : LIBRARIES) {
             if (!new File(output(context), name).isFile()) return true;
         }
-        return !expectedStamp(context, gameBase).equals(read(stampFile(context)));
+        String stamp = read(stampFile(context));
+        if (expectedStamp(context, gameBase).equals(stamp)) return false;
+        if (compatibleStamp(context, gameBase, stamp)) {
+            try {
+                writeStamp(context, gameBase);
+            } catch (IOException error) {
+                // Accepted again at the next start.
+            }
+            return false;
+        }
+        return true;
     }
 
     static void writeStamp(Context context, File gameBase) throws IOException {

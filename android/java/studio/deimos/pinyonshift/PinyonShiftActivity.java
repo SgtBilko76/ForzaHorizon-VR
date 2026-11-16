@@ -70,7 +70,10 @@ public class PinyonShiftActivity extends SDLActivity {
         // The Quest release builds the game's libraries on the device
         // (GameBuild): until that is done, the build screen comes first, and
         // afterwards the runtime finds the facades in the build's folder.
-        buildMissing = GameBuild.needed(this, new File(base, "game/base"));
+        // A disc the build can't use (GameCheck) shows its problem on the same
+        // screen, before building and before every start.
+        buildMissing = GameBuild.needed(this, new File(base, "game/base"))
+                || GameCheck.find(this) != null;
         if (buildMissing) {
             Intent build = new Intent(this, BuildActivity.class);
             if (getIntent() != null && getIntent().getExtras() != null) {
