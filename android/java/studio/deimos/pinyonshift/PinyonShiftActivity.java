@@ -292,11 +292,22 @@ public class PinyonShiftActivity extends SDLActivity {
         return null;
     }
 
-    // Adreno 7xx and 8xx: Mesa Turnip Gen8 V37 (measured on the Adreno 740
-    // and 830 against the system driver, and on the 740 against newer Turnip
-    // builds). Others keep the system's.
+    // VR headsets (Meta Quest, PICO): Turnip Quest. Horizon OS refuses the
+    // allocation ioctls stock Turnip uses, so Turnip Gen8 V37 fails to create
+    // its device there and the game closes at start; Turnip Quest allocates
+    // through the GPUOBJ ioctls instead (quest/turnip). Other Adreno 7xx and
+    // 8xx: Mesa Turnip Gen8 V37 (measured on the Adreno 740 and 830 against
+    // the system driver, and on the 740 against newer Turnip builds). Others
+    // keep the system's.
     private static String recommendedDriver(String adreno) {
-        return adreno.startsWith("7") || adreno.startsWith("8") ? "turnip-gen8-v37" : null;
+        if (!adreno.startsWith("7") && !adreno.startsWith("8")) return null;
+        return vrHeadset() ? "turnip-quest" : "turnip-gen8-v37";
+    }
+
+    private static boolean vrHeadset() {
+        String maker = (Build.MANUFACTURER + " " + Build.BRAND).toLowerCase(java.util.Locale.ROOT);
+        return maker.contains("oculus") || maker.contains("meta") || maker.contains("pico")
+                || maker.contains("bytedance");
     }
 
     // Copies each driver folder under the package's assets/drivers into

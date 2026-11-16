@@ -745,7 +745,9 @@ def _build_manifest(tools: Tools, version_name: str, libraries: list[Path]) -> d
 # into state/drivers and android_gpu_driver "auto" picks by GPU: the binary
 # from .local/android/drivers/<name> (not in the repository), its notice from
 # android/drivers/<name>.
-BUNDLED_DRIVERS = ["turnip-gen8-v37"]
+# turnip-quest: quest/turnip/build-turnip-quest.sh, the one Turnip that
+# creates a device on Horizon OS (recommended on VR headsets).
+BUNDLED_DRIVERS = ["turnip-gen8-v37", "turnip-quest"]
 
 
 def bundled_driver_files() -> list[tuple[Path, str]]:
@@ -755,6 +757,9 @@ def bundled_driver_files() -> list[tuple[Path, str]]:
         notice = ROOT / "android" / "drivers" / name
         found = sorted(binary.glob("*")) if binary.is_dir() else []
         if not any(path.suffix == ".so" for path in found):
+            if quest_release():
+                # Without it the Quest release can't create its Vulkan device.
+                raise AndroidError(f"bundled driver {name} is missing from {binary}")
             print(f"warning: bundled driver {name} is missing from {binary}; not packaged")
             continue
         for path in found + sorted(notice.glob("*")):
