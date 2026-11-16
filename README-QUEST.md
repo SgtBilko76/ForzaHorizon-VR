@@ -36,6 +36,17 @@ a folder aside and checks them against the supported disc before it copies
 the other 2,397 files. An extracted folder works too. There is no network
 copy from a PC.
 
+## VR camera mods
+
+The head-tracked view drives the immersive camera mod's head layers, so
+the game needs `immersive_camera` (Pinyon Shift's own, packaged in the APK)
+and `zz-archive-patches`, the player's own `media/camera.zip` with the mod's
+layers merged into its CameraPhysics.xml. That one is game data, so
+`VrMods.java` builds it on the headset at each start when its inputs
+changed, as `tools/build-mod-archives.py` does on a PC (`XmlMerge.java`,
+`FhArchive.java`; `libfhvr_archive.so` exposes the runtime's LZX decoder),
+and enables both mods. The result matches the PC tool's byte for byte.
+
 ## Game file check
 
 Before building and before every start, `GameCheck.java` compares the
