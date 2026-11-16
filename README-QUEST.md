@@ -27,6 +27,15 @@ the usual few seconds. If the headset sleeps or the app is closed during the
 build, it continues where it stopped. About 4 GB must be free while it runs;
 the temporary files are deleted at the end.
 
+## Setup on the headset
+
+The setup screen (`SetupActivity.java`) copies the game from the player's
+disc image through the system file picker: `XisoReader.java` reads the
+Xbox 360 XDVDFS game partition directly, unpacks the three executables into
+a folder aside and checks them against the supported disc before it copies
+the other 2,397 files. An extracted folder works too. There is no network
+copy from a PC.
+
 ## Game file check
 
 Before building and before every start, `GameCheck.java` compares the
