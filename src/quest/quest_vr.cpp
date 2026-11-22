@@ -120,8 +120,11 @@ void main() {
 // keeps fixed in the room while the head moves on).
 constexpr float kDegrees = 57.2957795f;
 // debug.fhvr.vfov. Owner's pick 2026-11-11 on Turnip with coarse shading:
-// 62 deg (~93 wide) ran 42-44 fps where 70 ran 26-27 at the same spot.
-constexpr float kVrVerticalFovDeg = 62.0f;
+// 62 deg (~93 wide) ran 42-44 fps where 70 ran 26-27 at the same spot, but
+// with the stereo picture 62 left a black bar below the view. Owner's pick
+// 2026-11-22, tried live: 76 hid the bar, 70 (a small bar below) felt
+// smoother; the upper edge sits outside the lenses' view.
+constexpr float kVrVerticalFovDeg = 70.0f;
 // The HUD sits in the frame's corners, outside the headset's view at this
 // width: in the head view it moves in by a 20 % margin and shrinks to 85 %
 // (owner's pick, live); the curved screen keeps the game's own layout.
