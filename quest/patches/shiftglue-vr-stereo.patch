@@ -32,6 +32,19 @@ index 20512d1f..419b9b22 100644
    bool EnsureSwapCamera();
    bool swap_camera_failed_ = false;
    VkDescriptorSetLayout swap_camera_set_layout_ = VK_NULL_HANDLE;
+diff --git a/include/rex/graphics/vulkan/fh1_native_executor.h b/include/rex/graphics/vulkan/fh1_native_executor.h
+index 32513274..3d63c571 100644
+--- a/include/rex/graphics/vulkan/fh1_native_executor.h
++++ b/include/rex/graphics/vulkan/fh1_native_executor.h
+@@ -604,6 +604,8 @@ class Fh1NativeExecutor {
+   uint32_t camera_depth_rows_ready_ = 0;
+   // The rows the bands need; the copy is resized to it between frames.
+   uint32_t camera_depth_wanted_height_ = 0;
++  // Untiled: this frame's scene depth was copied when its tiling ended.
++  bool camera_untile_snapshot_ = false;
+   bool camera_depth_failed_ = false;
+   VkDescriptorSetLayout camera_depth_set_layout_ = VK_NULL_HANDLE;
+   VkPipelineLayout camera_depth_pipeline_layout_ = VK_NULL_HANDLE;
 diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
 index 6dd122e1..105367c6 100644
 --- a/src/graphics/CMakeLists.txt
@@ -143,6 +156,84 @@ index 7fc18bf1..baeecaba 100644
          // Need to submit all the commands before giving the image back to the
          // presenter so it can submit its own commands for displaying it to the
          // queue, and also need to submit the release barrier.
+diff --git a/src/graphics/vulkan/fh1_camera.cpp b/src/graphics/vulkan/fh1_camera.cpp
+index e6daaeeb..30e08340 100644
+--- a/src/graphics/vulkan/fh1_camera.cpp
++++ b/src/graphics/vulkan/fh1_camera.cpp
+@@ -551,7 +551,14 @@ void Fh1NativeExecutor::SnapshotCameraDepth(uint32_t band_row) {
+   // frame's first band, to the bottom of the lowest band seen, so frames
+   // with a taller band than it has are dropped until the next.
+   const uint32_t width = surface->width * scale_;
+-  const uint32_t height = std::min(surface->height, surface->image_height) * scale_;
++  // Untiled (fh1_untile_predicated_tiling), the surface holds the whole
++  // screen's rows (untile_height_), not just one EDRAM period: a 4x MSAA
++  // 1280-wide scene has 512-row periods, and copying only those left the
++  // copy short of the 720-row guest output, so it was never taken.
++  const uint32_t rows =
++      untile_height_ ? std::min(surface->image_height, std::max(surface->height, untile_height_))
++                     : std::min(surface->height, surface->image_height);
++  const uint32_t height = rows * scale_;
+   const uint32_t dest_row = band_row * scale_;
+   camera_depth_wanted_height_ = std::max(camera_depth_wanted_height_, dest_row + height);
+   if (camera_depth_rows_ &&
+@@ -654,11 +661,19 @@ void Fh1NativeExecutor::SnapshotCameraDepth(uint32_t band_row) {
+ 
+ VkImageView Fh1NativeExecutor::TakeCameraFrame(uint32_t width, uint32_t height,
+                                                Camera& camera_out) {
+-  const bool depth_ready = camera_depth_rows_ready_ >= height;
++  const uint32_t rows_ready = camera_depth_rows_ready_;
++  const bool depth_ready = rows_ready >= height;
+   const bool ready = depth_ready && camera_ready_valid_;
+   camera_depth_rows_ready_ = 0;
+   if (!ready || camera_depth_.view == VK_NULL_HANDLE || camera_depth_.width < width ||
+       camera_depth_.height < height) {
++    static bool reported = false;
++    if (!reported && camera_ready_valid_) {
++      reported = true;
++      REXGPU_INFO("Camera depth not taken: {} rows ready of {}, copy {}x{}, wanted {}x{}",
++                  rows_ready, height, camera_depth_.width, camera_depth_.height,
++                  width, height);
++    }
+     Count(!depth_ready && !camera_ready_valid_ ? "camera_take_none"
+           : !camera_ready_valid_                       ? "camera_take_no_matrix"
+           : !ready                                     ? "camera_take_no_depth"
+diff --git a/src/graphics/vulkan/fh1_native_executor.cpp b/src/graphics/vulkan/fh1_native_executor.cpp
+index 43ebe5ab..472e950c 100644
+--- a/src/graphics/vulkan/fh1_native_executor.cpp
++++ b/src/graphics/vulkan/fh1_native_executor.cpp
+@@ -842,6 +842,12 @@ void Fh1NativeExecutor::BeginSurfaceRendering(Surface& surface, bool uint_view)
+ 
+ void Fh1NativeExecutor::EndUntiledTiling() {
+   if (untile_bands_.empty()) return;
++  // The camera's scene depth, whole, before the last band is copied down
++  // over its top rows (the HUD-time copy would then see those rows twice).
++  if (camera_tracking_enabled_ && !camera_untile_snapshot_) {
++    SnapshotCameraDepth(0);
++    camera_untile_snapshot_ = camera_depth_rows_ != 0;
++  }
+   for (const auto& [packed, band] : untile_bands_) {
+     Surface* surface = FindSurface(packed);
+     if (!surface || band >= untile_height_) continue;
+@@ -3702,6 +3708,7 @@ void Fh1NativeExecutor::OnSwap(uint64_t frame) {
+   hud_scene_base_ = UINT32_MAX;
+   camera_depth_rows_ready_ = camera_depth_rows_;
+   camera_depth_rows_ = 0;
++  camera_untile_snapshot_ = false;
+   FinishCameraFrame();
+   AdvanceJitter();
+   if (!initialized_) return;
+@@ -3758,8 +3765,9 @@ void Fh1NativeExecutor::MaybeSnapshotBeforeHud(const Fh1DrawInfo& draw) {
+     return;
+   }
+   hud_draw_ = true;
+-  // Untiled, the scene depth is whole by the HUD.
+-  if (untile_height_) SnapshotCameraDepth(0);
++  // Untiled, the scene depth is whole by the HUD (unless the end of the
++  // tiling already copied it, before its rows were copied down).
++  if (untile_height_ && !camera_untile_snapshot_) SnapshotCameraDepth(0);
+   if (!hud_snapshot_enabled_ || hud_snapshot_taken_) return;
+   hud_snapshot_taken_ = true;
+   const auto surface_info = register_file_.Get<reg::RB_SURFACE_INFO>();
 diff --git a/src/graphics/vulkan/fh1_stereo.cpp b/src/graphics/vulkan/fh1_stereo.cpp
 new file mode 100644
 index 00000000..f0b3971c
