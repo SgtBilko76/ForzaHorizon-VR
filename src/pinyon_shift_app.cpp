@@ -993,6 +993,18 @@ bool PinyonShiftApp::SetupPresentation() {
 #if defined(PINYON_SHIFT_QUEST_VR)
   // Before the presenter asks for its window: it presents into the XR
   // session's surface (src/quest/quest_vr.h).
+  // Its shortcuts change settings the SETTINGS screen shows: saved like the
+  // screen does, on the UI thread.
+  pinyon_shift::quest::SetSettingSaver([this](const char* name, const char* literal) {
+    if (!window()) return;
+    window()->app_context().CallInUIThreadDeferred(
+        [this, name = std::string(name), literal = std::string(literal)] {
+          if (!host_config_) return;
+          host_config_->Load();
+          host_config_->Set(name, literal);
+          if (!host_config_->Save()) REXLOG_ERROR("VR: could not save {}", name);
+        });
+  });
   pinyon_shift::quest::Start();
 #endif
   if (ReXApp::SetupPresentation()) {

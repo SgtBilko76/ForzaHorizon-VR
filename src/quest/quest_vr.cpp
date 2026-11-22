@@ -45,6 +45,8 @@
 #define XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME "XR_BD_controller_interaction"
 #endif
 
+REXCVAR_DECLARE(bool, vr_hand_steering);
+
 #define VR_LOG(...) __android_log_print(ANDROID_LOG_INFO, "FHVR", __VA_ARGS__)
 #define VR_ERR(...) __android_log_print(ANDROID_LOG_ERROR, "FHVR", __VA_ARGS__)
 
@@ -178,6 +180,45 @@ struct HeadShared {
   std::chrono::steady_clock::time_point last_read{};
 } g_head;
 
+// ---- hand steering (vr_hand_steering, the SETTINGS screen's VR HAND
+// STEERING). In the head-tracked view the grips hold a steering wheel in
+// front of the seat: turning both hands (or one, around the wheel's centre)
+// turns it, ±90 degrees for full lock (owner's pick), and the wheel only
+// follows the hands from where they took it. A grip pressed beside the right
+// knee takes a sequential gear lever instead: push forward to shift up (the
+// pad's B), pull back to shift down (X), then back to the middle. The game's
+// rumble plays on the hands that hold the wheel. Menu + both grips held for
+// kHandSteeringToggleHold switches it on and off anywhere.
+constexpr float kWheelFullLockRad = 90.0f / 57.2957795f;
+constexpr float kWheelRadiusGuessM = 0.18f;  // before both hands held it once
+constexpr float kWheelMinRadiusM = 0.05f;    // a hand closer to the centre turns nothing
+// The lever's knob in the seat's frame (x right, y up, z back, from the eyes
+// at the last recentre). Live: debug.fhvr.leverx / levery / leverz.
+constexpr float kLeverX = 0.25f, kLeverY = -0.55f, kLeverZ = -0.25f;
+constexpr float kLeverGrabRadiusM = 0.15f;
+constexpr float kLeverShiftM = 0.05f;   // push or pull this far to shift
+constexpr float kLeverCentreM = 0.025f; // back within this to shift again
+constexpr int kShiftFrames = 8;         // the button held for ~110 ms (72 Hz)
+constexpr auto kHandSteeringToggleHold = std::chrono::milliseconds(1000);
+
+// The game's rumble on the virtual pad (0..65535 per motor).
+std::atomic<uint32_t> g_rumble_low{0}, g_rumble_high{0};
+
+std::mutex g_saver_mutex;
+std::function<void(const char*, const char*)> g_saver;
+
+void SaveSetting(const char* name, const char* literal) {
+  std::lock_guard lock(g_saver_mutex);
+  if (g_saver) g_saver(name, literal);
+}
+
+float WrapAngle(float a) {
+  constexpr float kPi = 3.14159265f;
+  while (a > kPi) a -= 2.0f * kPi;
+  while (a <= -kPi) a += 2.0f * kPi;
+  return a;
+}
+
 int64_t GuestFrames() {
   return rex::perf::GetTotalCounter(rex::perf::CounterId::kSourceFrameCount);
 }
@@ -283,6 +324,12 @@ class VirtualPad {
     desc.vendor_id = 0x045E;  // Microsoft
     desc.product_id = 0x028E;  // Xbox 360 controller
     desc.name = "Quest Touch";
+    // The game's rumble, for the hand steering's controllers.
+    desc.Rumble = [](void*, Uint16 low, Uint16 high) -> bool {
+      g_rumble_low.store(low, std::memory_order_relaxed);
+      g_rumble_high.store(high, std::memory_order_relaxed);
+      return true;
+    };
     const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
     if (!id) {
       VR_ERR("virtual pad: %s", SDL_GetError());
@@ -337,6 +384,9 @@ class QuestXr {
     XrAction lstick = XR_NULL_HANDLE, rstick = XR_NULL_HANDLE;
     // The vector2f binding alone has read 0,0 on Quest (GT4 VR): axes too.
     XrAction lx = XR_NULL_HANDLE, ly = XR_NULL_HANDLE, rx = XR_NULL_HANDLE, ry = XR_NULL_HANDLE;
+    // Hand steering: where the hands are, and their vibration.
+    XrAction lpose = XR_NULL_HANDLE, rpose = XR_NULL_HANDLE;
+    XrAction lhaptic = XR_NULL_HANDLE, rhaptic = XR_NULL_HANDLE;
   };
 
   bool SetError(const char* what, XrResult result = XR_SUCCESS) {
@@ -514,6 +564,12 @@ class QuestXr {
         {&actions_.ly, "ly", XR_ACTION_TYPE_FLOAT_INPUT, "/user/hand/left/input/thumbstick/y"},
         {&actions_.rx, "rx", XR_ACTION_TYPE_FLOAT_INPUT, "/user/hand/right/input/thumbstick/x"},
         {&actions_.ry, "ry", XR_ACTION_TYPE_FLOAT_INPUT, "/user/hand/right/input/thumbstick/y"},
+        {&actions_.lpose, "lpose", XR_ACTION_TYPE_POSE_INPUT, "/user/hand/left/input/grip/pose"},
+        {&actions_.rpose, "rpose", XR_ACTION_TYPE_POSE_INPUT, "/user/hand/right/input/grip/pose"},
+        {&actions_.lhaptic, "lhaptic", XR_ACTION_TYPE_VIBRATION_OUTPUT,
+         "/user/hand/left/output/haptic"},
+        {&actions_.rhaptic, "rhaptic", XR_ACTION_TYPE_VIBRATION_OUTPUT,
+         "/user/hand/right/output/haptic"},
     };
     std::vector<XrActionSuggestedBinding> bindings;
     for (const Def& def : defs) {
@@ -569,6 +625,14 @@ class QuestXr {
     attach.actionSets = &actions_.set;
     res = xrAttachSessionActionSets(session_, &attach);
     if (XR_FAILED(res)) return SetError("xrAttachSessionActionSets failed", res);
+    // The hands for hand steering; without them it stays off.
+    for (int h = 0; h < 2; ++h) {
+      XrActionSpaceCreateInfo space_info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+      space_info.action = h ? actions_.rpose : actions_.lpose;
+      space_info.poseInActionSpace.orientation.w = 1.0f;
+      if (XR_FAILED(xrCreateActionSpace(session_, &space_info, &hand_space_[h])))
+        VR_ERR("no %s hand space: hand steering unavailable", h ? "right" : "left");
+    }
     return true;
   }
 
@@ -771,6 +835,8 @@ class QuestXr {
     if (swapchain_ != XR_NULL_HANDLE) xrDestroySwapchain(swapchain_);
     if (local_space_ != XR_NULL_HANDLE) xrDestroySpace(local_space_);
     if (view_space_ != XR_NULL_HANDLE) xrDestroySpace(view_space_);
+    for (XrSpace& space : hand_space_)
+      if (space != XR_NULL_HANDLE) xrDestroySpace(space);
     if (actions_.set != XR_NULL_HANDLE) xrDestroyActionSet(actions_.set);
     if (session_ != XR_NULL_HANDLE) xrDestroySession(session_);
     if (instance_ != XR_NULL_HANDLE) xrDestroyInstance(instance_);
@@ -941,7 +1007,7 @@ class QuestXr {
   // the bumpers, stick clicks the stick buttons. Menu: Start on release,
   // Back (View) while held 0.5 s. Left grip held: the right stick is the
   // d-pad (and LB is not sent while it is used that way).
-  void UpdateInput() {
+  void UpdateInput(XrTime time) {
     XrActiveActionSet active{actions_.set, XR_NULL_PATH};
     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
     sync.countActiveActionSets = 1;
@@ -978,19 +1044,265 @@ class QuestXr {
     }
 
     // Menu: a short press is Start (sent for a few frames after release),
-    // holding it is Back.
+    // holding it is Back. Pressed while both grips are held, it is the hand
+    // steering's switch instead (held kHandSteeringToggleHold).
     const auto now = std::chrono::steady_clock::now();
     const bool menu = Bool(actions_.menu);
-    if (menu && !menu_down_) menu_since_ = now;
-    const bool held = menu && now - menu_since_ >= kMenuHoldForBack;
+    const bool grips[2] = {Float(actions_.lgrip) > 0.5f, Float(actions_.rgrip) > 0.5f};
+    if (menu && !menu_down_) {
+      menu_since_ = now;
+      menu_combo_ = grips[0] && grips[1];
+    }
+    if (menu && menu_combo_ && !combo_fired_ && now - menu_since_ >= kHandSteeringToggleHold) {
+      combo_fired_ = true;
+      ToggleHandSteering(time);
+    }
+    const bool held = menu && !menu_combo_ && now - menu_since_ >= kMenuHoldForBack;
     if (held) menu_was_back_ = true;
-    if (!menu && menu_down_ && !menu_was_back_) start_frames_ = 6;
-    if (!menu) menu_was_back_ = false;
+    if (!menu && menu_down_ && !menu_was_back_ && !menu_combo_) start_frames_ = 6;
+    if (!menu) {
+      menu_was_back_ = false;
+      menu_combo_ = false;
+      combo_fired_ = false;
+    }
     menu_down_ = menu;
     s.buttons[SDL_GAMEPAD_BUTTON_BACK] = held;
     s.buttons[SDL_GAMEPAD_BUTTON_START] = start_frames_ > 0;
     if (start_frames_ > 0) --start_frames_;
+
+    HandSteering(time, grips, l, r, s);
     pad_.Publish(s);
+  }
+
+  void ToggleHandSteering(XrTime time) {
+    const bool on = !REXCVAR_GET(vr_hand_steering);
+    const char* literal = on ? "true" : "false";
+    rex::cvar::SetFlagByName("vr_hand_steering", literal);
+    SaveSetting("vr_hand_steering", literal);
+    VR_LOG("hand steering %s (Menu + both grips)", on ? "on" : "off");
+    // On: one long buzz; off: a short one.
+    for (int h = 0; h < 2; ++h) Pulse(h, on ? 0.8f : 0.4f, on ? 0.3f : 0.08f, time);
+  }
+
+  void Pulse(int hand, float amplitude, float seconds, XrTime time) {
+    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+    info.action = hand ? actions_.rhaptic : actions_.lhaptic;
+    XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+    vibration.amplitude = std::clamp(amplitude, 0.0f, 1.0f);
+    vibration.duration = XrDuration(seconds * 1.0e9f);
+    vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+    xrApplyHapticFeedback(session_, &info, reinterpret_cast<XrHapticBaseHeader*>(&vibration));
+    haptic_until_[hand] = time + vibration.duration;
+    rumbling_[hand] = false;
+  }
+
+  void StopHaptics(int hand) {
+    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+    info.action = hand ? actions_.rhaptic : actions_.lhaptic;
+    xrStopHapticFeedback(session_, &info);
+    rumbling_[hand] = false;
+  }
+
+  // A hand's grip in the seat's frame (x right, y up, z back, from the eyes
+  // at the last recentre).
+  bool LocateHand(int hand, XrTime time, XrVector3f* out) {
+    if (hand_space_[hand] == XR_NULL_HANDLE) return false;
+    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(xrLocateSpace(hand_space_[hand], local_space_, time, &location)) ||
+        !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+      return false;
+    const XrVector3f d{location.pose.position.x - screen_pose_.position.x,
+                       location.pose.position.y - screen_pose_.position.y,
+                       location.pose.position.z - screen_pose_.position.z};
+    *out = QuatRotate(QuatConj(screen_pose_.orientation), d);
+    return true;
+  }
+
+  // Hand steering (see kWheelFullLockRad): only in the head-tracked view,
+  // where the grips are not needed for the menus' LB/RB tabs.
+  void HandSteering(XrTime time, const bool grips[2], const XrVector2f& l, const XrVector2f& r,
+                    VirtualPad::State& s) {
+    const bool active = REXCVAR_GET(vr_hand_steering) && head_view_shown_ && placed_;
+    if (!active) {
+      if (hands_active_) {
+        for (int h = 0; h < 2; ++h) {
+          on_wheel_[h] = false;
+          if (rumbling_[h]) StopHaptics(h);
+        }
+        lever_held_ = false;
+        wheel_hand_set_ = 0;
+        wheel_angle_ = 0.0f;
+        hands_active_ = false;
+      }
+      grip_prev_[0] = grips[0];
+      grip_prev_[1] = grips[1];
+      return;
+    }
+    if (!hands_active_) {
+      hands_active_ = true;
+      // Grips already held when it starts take nothing until pressed again.
+      grip_prev_[0] = grips[0];
+      grip_prev_[1] = grips[1];
+      VR_LOG("hand steering active (head view)");
+    }
+    XrVector3f hand[2];
+    bool valid[2];
+    for (int h = 0; h < 2; ++h) valid[h] = LocateHand(h, time, &hand[h]);
+    auto distance = [](const XrVector3f& a, const XrVector3f& b) {
+      const float x = a.x - b.x, y = a.y - b.y, z = a.z - b.z;
+      return std::sqrt(x * x + y * y + z * z);
+    };
+
+    // The lever: a light tick when the right hand reaches it.
+    const XrVector3f lever{PropertyFloat("debug.fhvr.leverx", kLeverX),
+                           PropertyFloat("debug.fhvr.levery", kLeverY),
+                           PropertyFloat("debug.fhvr.leverz", kLeverZ)};
+    const bool at_lever = valid[1] && distance(hand[1], lever) < kLeverGrabRadiusM;
+    if (at_lever && !lever_zone_ && !grips[1]) Pulse(1, 0.25f, 0.015f, time);
+    lever_zone_ = at_lever;
+
+    // What a grip takes is decided when it is pressed.
+    for (int h = 0; h < 2; ++h) {
+      if (grips[h] && !grip_prev_[h] && valid[h]) {
+        if (h == 1 && at_lever) {
+          lever_held_ = true;
+          lever_ref_z_ = hand[1].z;
+          lever_state_ = 0;
+          Pulse(1, 0.4f, 0.02f, time);
+        } else {
+          on_wheel_[h] = true;
+          Pulse(h, 0.3f, 0.02f, time);
+        }
+        VR_LOG("hand steering: %s hand takes the %s at %.2f %.2f %.2f m (lever %.2f m away)",
+               h ? "right" : "left", h == 1 && at_lever ? "lever" : "wheel", hand[h].x, hand[h].y,
+               hand[h].z, distance(hand[h], lever));
+      }
+      if (!grips[h]) {
+        on_wheel_[h] = false;
+        if (h == 1) lever_held_ = false;
+      }
+      grip_prev_[h] = grips[h];
+    }
+
+    // Shifting: forward (-z) up, back (+z) down, then the middle again.
+    if (lever_held_ && valid[1]) {
+      const float dz = hand[1].z - lever_ref_z_;
+      if (lever_state_ == 0 && dz < -kLeverShiftM) {
+        lever_state_ = 1;
+        shift_up_frames_ = kShiftFrames;
+        Pulse(1, 0.9f, 0.04f, time);
+        VR_LOG("hand steering: shift up");
+      } else if (lever_state_ == 0 && dz > kLeverShiftM) {
+        lever_state_ = -1;
+        shift_down_frames_ = kShiftFrames;
+        Pulse(1, 0.9f, 0.04f, time);
+        VR_LOG("hand steering: shift down");
+      } else if (lever_state_ != 0 && std::fabs(dz) < kLeverCentreM) {
+        lever_state_ = 0;
+      }
+    }
+
+    // Steering: the hands' angle (counter-clockwise positive, seen from the
+    // seat), the wheel turning by as much as the hands turn from where they
+    // took it.
+    const int set = (on_wheel_[0] && valid[0] ? 1 : 0) | (on_wheel_[1] && valid[1] ? 2 : 0);
+    float hands_angle = 0.0f;
+    bool have_angle = false;
+    if (set == 3) {
+      hands_angle = std::atan2(hand[1].y - hand[0].y, hand[1].x - hand[0].x);
+      have_angle = true;
+      wheel_centre_ = {(hand[0].x + hand[1].x) * 0.5f, (hand[0].y + hand[1].y) * 0.5f,
+                       (hand[0].z + hand[1].z) * 0.5f};
+      wheel_centre_valid_ = true;
+    } else if (set) {
+      const int h = set == 1 ? 0 : 1;
+      if (!wheel_centre_valid_) {
+        wheel_centre_ = {hand[h].x + (h ? -kWheelRadiusGuessM : kWheelRadiusGuessM), hand[h].y,
+                         hand[h].z};
+        wheel_centre_valid_ = true;
+      }
+      const float dx = hand[h].x - wheel_centre_.x, dy = hand[h].y - wheel_centre_.y;
+      if (dx * dx + dy * dy > kWheelMinRadiusM * kWheelMinRadiusM) {
+        // The left hand rests at 180 degrees, the right at 0.
+        hands_angle = WrapAngle(std::atan2(dy, dx) - (h ? 0.0f : 3.14159265f));
+        have_angle = true;
+      }
+    }
+    if (set != wheel_hand_set_) {
+      wheel_hand_set_ = set;
+      wheel_anchored_ = false;
+      if (!set) wheel_angle_ = 0.0f;  // let go: the wheel centres itself
+    }
+    if (set && have_angle) {
+      if (!wheel_anchored_) {
+        wheel_anchored_ = true;
+        wheel_anchor_wheel_ = wheel_angle_;
+        wheel_anchor_hands_ = hands_angle;
+      }
+      float angle = wheel_anchor_wheel_ + WrapAngle(hands_angle - wheel_anchor_hands_);
+      if (std::fabs(angle) > kWheelFullLockRad) {
+        // At full lock: turning back answers at once.
+        angle = std::copysign(kWheelFullLockRad, angle);
+        wheel_anchor_wheel_ = angle;
+        wheel_anchor_hands_ = hands_angle;
+      }
+      wheel_angle_ = angle;
+    }
+    if (set) {
+      // Counter-clockwise is left. debug.fhvr.wheeldz lifts small angles past
+      // a dead zone the game may have (0 = straight through).
+      const float v = std::clamp(-wheel_angle_ / kWheelFullLockRad, -1.0f, 1.0f);
+      const float dz = std::clamp(PropertyFloat("debug.fhvr.wheeldz", 0.0f), 0.0f, 0.5f);
+      s.lx = std::fabs(v) < 1.0e-3f ? 0.0f : std::copysign(dz + (1.0f - dz) * std::fabs(v), v);
+    } else {
+      s.lx = l.x;
+    }
+
+    // The grips are the hands now: no LB/RB from them, no d-pad from the
+    // left grip. The camera (RB) moves to the right stick's click.
+    s.rx = r.x;
+    s.ry = r.y;
+    for (int b : {SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+                  SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+                  SDL_GAMEPAD_BUTTON_LEFT_SHOULDER})
+      s.buttons[b] = false;
+    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_STICK];
+    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_STICK] = false;
+    dpad_used_ = false;
+    if (shift_up_frames_ > 0) {
+      s.buttons[SDL_GAMEPAD_BUTTON_EAST] = true;  // B: shift up
+      --shift_up_frames_;
+    }
+    if (shift_down_frames_ > 0) {
+      s.buttons[SDL_GAMEPAD_BUTTON_WEST] = true;  // X: shift down
+      --shift_down_frames_;
+    }
+
+    // The game's rumble on the hands that hold the wheel (the controllers
+    // cannot push back like a wheel's motor; bumps, kerbs, impacts and the
+    // engine come through). Shift and grab ticks win while they play.
+    const float strength = std::clamp(PropertyFloat("debug.fhvr.rumble", 1.0f), 0.0f, 2.0f);
+    const float amplitude =
+        std::clamp(float(std::max(g_rumble_low.load(std::memory_order_relaxed),
+                                  g_rumble_high.load(std::memory_order_relaxed))) /
+                       65535.0f * strength,
+                   0.0f, 1.0f);
+    for (int h = 0; h < 2; ++h) {
+      if (time < haptic_until_[h]) continue;
+      if (on_wheel_[h] && amplitude > 0.02f) {
+        XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+        info.action = h ? actions_.rhaptic : actions_.lhaptic;
+        XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+        vibration.amplitude = amplitude;
+        vibration.duration = XrDuration(50000000);  // renewed every frame
+        vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+        xrApplyHapticFeedback(session_, &info,
+                              reinterpret_cast<XrHapticBaseHeader*>(&vibration));
+        rumbling_[h] = true;
+      } else if (rumbling_[h]) {
+        StopHaptics(h);
+      }
+    }
   }
 
   // The head relative to the recentred seat (screen_pose_: head position,
@@ -1084,7 +1396,7 @@ class QuestXr {
     if (XR_FAILED(xrWaitFrame(session_, &wait_info, &frame))) return;
     XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
     if (XR_FAILED(xrBeginFrame(session_, &begin_info))) return;
-    if (focused_) UpdateInput();
+    if (focused_) UpdateInput(frame.predictedDisplayTime);
     PollTuning();
     if (!has_surface_) CopyFrame();
     const bool picture = has_surface_ || texture_valid_;
@@ -1229,6 +1541,23 @@ class QuestXr {
   XrTime first_place_ = 0;
   XrPosef screen_pose_{{0, 0, 0, 1}, {0, 0, 0}}, flat_pose_{{0, 0, 0, 1}, {0, 0, 0}};
   bool head_view_shown_ = false;
+  // Hand steering (HandSteering).
+  XrSpace hand_space_[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+  bool hands_active_ = false;
+  bool grip_prev_[2] = {};
+  bool on_wheel_[2] = {};
+  int wheel_hand_set_ = 0;  // bit 0 left, bit 1 right
+  bool wheel_anchored_ = false;
+  float wheel_angle_ = 0.0f, wheel_anchor_wheel_ = 0.0f, wheel_anchor_hands_ = 0.0f;
+  XrVector3f wheel_centre_{};
+  bool wheel_centre_valid_ = false;
+  bool lever_zone_ = false, lever_held_ = false;
+  float lever_ref_z_ = 0.0f;
+  int lever_state_ = 0;  // 1 pushed (up), -1 pulled (down), 0 middle
+  int shift_up_frames_ = 0, shift_down_frames_ = 0;
+  XrTime haptic_until_[2] = {};
+  bool rumbling_[2] = {};
+  bool menu_combo_ = false, combo_fired_ = false;
   std::string screen_hud_safe_zone_, screen_hud_scale_;
   uint32_t tuning_tick_ = 0;
   std::string last_cvar_;
@@ -1241,6 +1570,11 @@ class QuestXr {
 };
 
 }  // namespace
+
+void SetSettingSaver(std::function<void(const char* name, const char* literal)> saver) {
+  std::lock_guard lock(g_saver_mutex);
+  g_saver = std::move(saver);
+}
 
 void Start() {
   if (g_started.exchange(true)) return;

@@ -2266,6 +2266,14 @@ std::unique_ptr<MenuScreen> SettingsPages::Root() {
   resume.label = "RESUME";
   resume.activate = [self = shared_from_this()] { self->host_ui_.Close(); };
   rows.push_back(std::move(resume));
+#if defined(__ANDROID__)
+  // Meta Quest: hands on a steering wheel and a gear lever in the cockpit
+  // and hood views (src/quest/quest_vr.cpp). Menu + both grips held while
+  // playing switches the same setting. (This file is in pinyon_shift_host,
+  // which does not get PINYON_SHIFT_QUEST_VR; the Android app is the Quest
+  // app on this branch.)
+  rows.push_back(Toggle("VR HAND STEERING", "vr_hand_steering"));
+#endif
   rows.push_back(Page("DISPLAY", &SettingsPages::Display));
   rows.push_back(Page("GRAPHICS", &SettingsPages::Graphics));
   rows.push_back(Page("AUDIO", &SettingsPages::Audio));

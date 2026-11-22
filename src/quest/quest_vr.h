@@ -6,11 +6,19 @@
 // ordinary Android Surface that OpenXR's XR_KHR_android_surface_swapchain
 // hands out, exactly as it would draw into the activity's window, so the
 // renderer needs no VR-specific code for this first stage. The Touch
-// controllers feed an SDL virtual Xbox gamepad.
+// controllers feed an SDL virtual Xbox gamepad; with vr_hand_steering they
+// are the player's hands on a steering wheel and a gear lever.
+
+#include <functional>
 
 struct ANativeWindow;
 
 namespace pinyon_shift::quest {
+
+// Saves a setting into the game's configuration (pinyon_shift.toml, a TOML
+// literal): the VR host's shortcuts change settings the SETTINGS screen also
+// shows. Call before Start().
+void SetSettingSaver(std::function<void(const char* name, const char* literal)> saver);
 
 // Starts the XR thread once (later calls do nothing). Call before the
 // presenter creates its surface.

@@ -56,6 +56,30 @@ and sets the picture distance per view: 10 m for the head-tracked view, 3 m
 for the curved screen. It is always on in the VR build (`fh1_vr_stereo`,
 set when the XR surface is handed to the game).
 
+## Hand steering
+
+`vr_hand_steering` (off by default; SETTINGS > VR HAND STEERING, right
+under RESUME in the pause menu's SETTINGS screen, or Menu + both grips held
+for a second while playing, which saves the same setting through
+`quest::SetSettingSaver`) turns the Touch controllers into the player's
+hands, only in the head-tracked cockpit and hood views, where the grips are
+not needed for the menus' LB/RB tabs:
+
+- A grip pressed anywhere else takes the steering wheel. Turning the hands
+  (both, as on a wheel, or one around the wheel's centre) turns it by as much
+  as they turn from where they took it, ±90 degrees for full lock, sent as the
+  pad's left stick. Letting go centres it and the stick steers again.
+- A right grip pressed beside the right knee (seat frame 0.25 m right,
+  0.55 m below the eyes, 0.25 m ahead; `debug.fhvr.leverx/y/z`) takes a
+  sequential lever: push forward 5 cm to shift up (the pad's B), pull back to
+  shift down (X), then back to the middle. The hand ticks when it reaches the
+  lever.
+- The game's pad rumble (bumps, kerbs, impacts, engine) plays on the hands
+  that hold the wheel (`debug.fhvr.rumble` scales it); Touch controllers have
+  no motor to push back like a wheel's force feedback.
+- With the grips taken, the camera button (RB) moves to the right stick's
+  click; LB (clutch) and the left grip's d-pad are not available.
+
 ## Meta Quest and PICO
 
 The same APK runs on both. Where the runtime lacks Meta's

@@ -160,6 +160,11 @@ REXCVAR_DEFINE_DOUBLE(pinyon_shift_camera_head, 1.0, "Display",
                       "up to 2)")
     .range(0.0, 2.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(vr_hand_steering, false, "VR",
+                    "Meta Quest: in the cockpit and hood views the grips hold a steering wheel "
+                    "and a sequential gear lever beside the right knee (src/quest/quest_vr.cpp); "
+                    "also Menu + both grips held for a second while playing")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(pinyon_shift_pause_settings, true, "Pinyon Shift",
                     "Turn the offline pause menu's MULTIPLAYER row into SETTINGS, which opens "
                     "the in-game settings screen (takes effect at the next start)");
