@@ -3,6 +3,6 @@
   "version": "0.8.3-preview.1",
   "channel": "preview",
   "repository": "https://github.com/arcanite24/pinyon-shift",
-  "android_version_name": "0.3.4-beta",
-  "android_version_code": 3400
+  "android_version_name": "0.4.0-beta",
+  "android_version_code": 4000
 }
