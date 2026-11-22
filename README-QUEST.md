@@ -38,6 +38,24 @@ changed, as `tools/build-mod-archives.py` does on a PC (`XmlMerge.java`,
 `FhArchive.java`; `libfhvr_archive.so` exposes the runtime's LZX decoder),
 and enables both mods. The result matches the PC tool's byte for byte.
 
+## Stereoscopic 3D
+
+The game draws one picture per frame; drawing it twice would halve the
+frame rate. The engine makes the second eye from that picture and its scene
+depth instead (`quest/patches/shiftglue-vr-stereo.patch`, which adds
+`fh1_stereo.cpp`): at every swap the guest output becomes twice as wide, and
+each scene pixel moves sideways by its disparity for each eye,
+`IPD / 2 * (1 / depth - 1 / picture distance)` in pixels at the game's field
+of view. The nearest pixel wins where several land; holes uncovered behind
+nearer objects take the farther neighbour's colour. The HUD (from the
+HUD-less copy's coverage) stays flat at the picture's distance, and frames
+without a scene depth (menus) show the same picture to both eyes.
+`quest_vr.cpp` gives each eye its half of the side-by-side picture as its
+own layer, measures the player's eye distance from the headset's eye poses
+and sets the picture distance per view: 10 m for the head-tracked view, 3 m
+for the curved screen. It is always on in the VR build (`fh1_vr_stereo`,
+set when the XR surface is handed to the game).
+
 ## Meta Quest and PICO
 
 The same APK runs on both. Where the runtime lacks Meta's

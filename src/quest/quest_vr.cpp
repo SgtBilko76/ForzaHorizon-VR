@@ -51,8 +51,12 @@
 namespace pinyon_shift::quest {
 namespace {
 
-// The game's picture: 16:9, presented by the game's own Vulkan presenter.
-constexpr int32_t kSurfaceWidth = 1920;
+// The game's picture, presented by the game's own Vulkan presenter: the left
+// and the right eye side by side, each 16:9. The engine makes both from the
+// one picture the game draws and its depth (shiftglue-sdk fh1_stereo.cpp,
+// fh1_vr_stereo); each eye's layer shows its half.
+constexpr int32_t kEyeWidth = 1920;
+constexpr int32_t kSurfaceWidth = 2 * kEyeWidth;
 constexpr int32_t kSurfaceHeight = 1080;
 // The curved screen (GT4 VR's approved size: 5.71 m wide at 3.0 m, ~87 deg).
 constexpr float kScreenDistanceM = 3.0f;
@@ -127,6 +131,23 @@ constexpr float kQuadDistanceM = 10.0f;     // mono picture: far, so the eyes re
 constexpr int kShownLagFrames = 2;          // debug.fhvr.lagframes
 constexpr float kPoseLeadMs = 33.0f;        // debug.fhvr.lead
 
+// The picture's distance for the stereo pair (fh1_vr_stereo_convergence).
+void SetStereoConvergence(float metres) {
+  rex::cvar::SetFlagByName("fh1_vr_stereo_convergence", std::to_string(metres));
+}
+
+// One layer per eye, each showing its half of the side-by-side picture.
+template <typename Layer>
+void AddEyeLayers(const Layer& layer, Layer (&eyes)[2], const XrCompositionLayerBaseHeader** layers,
+                  uint32_t& layer_count) {
+  for (int eye = 0; eye < 2; ++eye) {
+    eyes[eye] = layer;
+    eyes[eye].eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+    eyes[eye].subImage.imageRect.offset = {eye * kEyeWidth, 0};
+    layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&eyes[eye]);
+  }
+}
+
 XrQuaternionf QuatMul(const XrQuaternionf& a, const XrQuaternionf& b) {
   return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
           a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
@@ -172,7 +193,7 @@ void UpdateHudLock(const head_tracking::Pose& pose) {
     rex::graphics::SetHudOffset(0.0f, 0.0f);
     return;
   }
-  const float tan_x = tan_y * float(kSurfaceWidth) / float(kSurfaceHeight);
+  const float tan_x = tan_y * float(kEyeWidth) / float(kSurfaceHeight);
   const float yaw = pose[head_tracking::kYaw] / kDegrees;
   const float pitch = pose[head_tracking::kPitch] / kDegrees;
   const float x = std::clamp(-std::tan(std::clamp(yaw, -1.4f, 1.4f)) / tan_x, -4.0f, 4.0f);
@@ -802,6 +823,10 @@ class QuestXr {
         // and a presenter waiting on a full buffer queue stalls the game.
         std::lock_guard lock(g_shared.mutex);
         if (!g_shared.surface) {
+          // The picture is the stereo pair from now on (only into this
+          // surface: the activity window fallback stays mono).
+          SetStereoConvergence(kScreenDistanceM);
+          rex::cvar::SetFlagByName("fh1_vr_stereo", "true");
           g_shared.surface = window_;
           g_shared.changed.notify_all();
           VR_LOG("surface %dx%d handed to the game", kSurfaceWidth, kSurfaceHeight);
@@ -858,6 +883,29 @@ class QuestXr {
     placed_ = true;
     if (!first_place_) first_place_ = time;
     VR_LOG("screen placed at head height %.2f m", head.y);
+    MeasureIpd(time);
+  }
+
+  // The player's eye distance (the headset's lens setting) for the stereo
+  // pair, from the two eyes' poses.
+  void MeasureIpd(XrTime time) {
+    XrViewLocateInfo info{XR_TYPE_VIEW_LOCATE_INFO};
+    info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    info.displayTime = time;
+    info.space = view_space_;
+    XrViewState state{XR_TYPE_VIEW_STATE};
+    XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+    uint32_t count = 0;
+    if (XR_FAILED(xrLocateViews(session_, &info, &state, 2, &count, views)) || count != 2 ||
+        !(state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT))
+      return;
+    const XrVector3f& a = views[0].pose.position;
+    const XrVector3f& b = views[1].pose.position;
+    const float ipd = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) +
+                                (a.z - b.z) * (a.z - b.z));
+    if (ipd < 0.045f || ipd > 0.085f) return;
+    rex::cvar::SetFlagByName("fh1_vr_stereo_ipd", std::to_string(ipd));
+    VR_LOG("stereo: eye distance %.1f mm", ipd * 1000.0f);
   }
 
   bool Bool(XrAction action) {
@@ -1044,7 +1092,9 @@ class QuestXr {
     flip.flags = XR_COMPOSITION_LAYER_IMAGE_LAYOUT_VERTICAL_FLIP_BIT_FB;
     XrCompositionLayerCylinderKHR cylinder{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    const XrCompositionLayerBaseHeader* layers[1] = {};
+    XrCompositionLayerCylinderKHR cylinders[2];
+    XrCompositionLayerQuad quads[2];
+    const XrCompositionLayerBaseHeader* layers[2] = {};
     uint32_t layer_count = 0;
     if (frame.shouldRender && picture) {
       // Place once more 4 s after the start, when the player sits still.
@@ -1083,6 +1133,9 @@ class QuestXr {
             rex::cvar::SetFlagByName("fh1_hud_safe_zone", screen_hud_safe_zone_);
           if (!screen_hud_scale_.empty()) rex::cvar::SetFlagByName("fh1_hud_scale", screen_hud_scale_);
         }
+        // Scene pixels as far away as the picture is shown stay put between
+        // the eyes; nearer ones come out of it, farther ones go behind.
+        SetStereoConvergence(head_view ? kQuadDistanceM : kScreenDistanceM);
         VR_LOG("view: %s", head_view ? "head-tracked (cockpit/hood camera)" : "curved screen");
       }
       if (head_view && ++head_log_ % 720 == 0)
@@ -1099,35 +1152,32 @@ class QuestXr {
                          pose.position.z + ahead.z};
         if (has_surface_ && has_image_layout_) quad.next = &flip;
         quad.space = local_space_;
-        quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
         quad.subImage.swapchain = swapchain_;
-        quad.subImage.imageRect.extent = {kSurfaceWidth, kSurfaceHeight};
+        quad.subImage.imageRect.extent = {kEyeWidth, kSurfaceHeight};
         quad.pose = pose;
-        quad.size = {2.0f * d * tan_v * float(kSurfaceWidth) / float(kSurfaceHeight), 2.0f * d * tan_v};
-        layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+        quad.size = {2.0f * d * tan_v * float(kEyeWidth) / float(kSurfaceHeight), 2.0f * d * tan_v};
+        AddEyeLayers(quad, quads, layers, layer_count);
       } else if (placed_) {
         XrSwapchainSubImage sub{};
         sub.swapchain = swapchain_;
-        sub.imageRect.extent = {kSurfaceWidth, kSurfaceHeight};
+        sub.imageRect.extent = {kEyeWidth, kSurfaceHeight};
         const float width = PropertyFloat("debug.fhvr.screenw", kScreenWidthM);
         if (has_cylinder_) {
           if (has_surface_ && has_image_layout_) cylinder.next = &flip;
           cylinder.space = local_space_;
-          cylinder.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
           cylinder.subImage = sub;
           cylinder.pose = screen_pose_;
           cylinder.radius = kScreenDistanceM;
           cylinder.centralAngle = 2.0f * std::atan(width * 0.5f / kScreenDistanceM);
-          cylinder.aspectRatio = float(kSurfaceWidth) / float(kSurfaceHeight);
-          layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cylinder);
+          cylinder.aspectRatio = float(kEyeWidth) / float(kSurfaceHeight);
+          AddEyeLayers(cylinder, cylinders, layers, layer_count);
         } else {
           if (has_surface_ && has_image_layout_) quad.next = &flip;
           quad.space = local_space_;
-          quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
           quad.subImage = sub;
           quad.pose = flat_pose_;
-          quad.size = {width, width * kSurfaceHeight / kSurfaceWidth};
-          layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+          quad.size = {width, width * kSurfaceHeight / kEyeWidth};
+          AddEyeLayers(quad, quads, layers, layer_count);
         }
       }
     }
