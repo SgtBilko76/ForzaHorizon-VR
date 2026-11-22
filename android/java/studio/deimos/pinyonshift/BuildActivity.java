@@ -127,6 +127,7 @@ public class BuildActivity extends Activity {
         column.setBackgroundColor(Color.rgb(15, 26, 20));
         column.setPadding(dp(40), dp(32), dp(40), dp(32));
         text(column, "ForzaHorizon-VR", 26, Color.WHITE, true);
+        text(column, "VR Port by Sgt. Bilko - Portroyale.online", 15, ACCENT, false);
         text(column, "Building the game for your headset from your own disc files. This happens once "
                 + "after installing or updating and takes about 25 to 35 minutes. Leave the app open; "
                 + "if it stops, it continues where it stopped the next time you start it.",
