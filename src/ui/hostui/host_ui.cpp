@@ -496,6 +496,10 @@ HostUi::Canvas HostUi::ComputeCanvas(rex::ui::UIDrawContext& context) const {
     width = float(rect->width);
     height = float(rect->height);
   }
+  // VR stereo: one eye's half of the side-by-side guest image.
+  if (stereo_shift_ > 0.0f) {
+    width = stereo_shift_;
+  }
   // Fit the 16:9 title space into the guest image.
   Canvas canvas;
   canvas.scale = std::min(width / kTitleWidth, height / kTitleHeight);
@@ -770,11 +774,35 @@ void HostUi::Flush() {
     }
     drawer_.Draw(draw);
     drawer_.EndDrawBatch();
+    if (stereo_shift_ > 0.0f) {
+      // The same again for the right eye, at the same place in its half (no
+      // disparity: the UI sits at the picture's distance).
+      std::vector<rex::ui::ImmediateVertex> right(batch.vertices);
+      for (rex::ui::ImmediateVertex& vertex : right) vertex.x += stereo_shift_;
+      draw_batch.vertices = right.data();
+      drawer_.BeginDrawBatch(draw_batch);
+      if (draw.scissor) {
+        draw.scissor_left += stereo_shift_;
+        draw.scissor_right += stereo_shift_;
+      }
+      drawer_.Draw(draw);
+      drawer_.EndDrawBatch();
+    }
   }
   batches_.clear();
 }
 
 void HostUi::Draw(rex::ui::UIDrawContext& context) {
+  stereo_shift_ = 0.0f;
+#if defined(__ANDROID__)
+  if (rex::cvar::GetFlagByName("fh1_vr_stereo") == "true") {
+    float width = float(context.render_target_width());
+    if (auto rect = presenter_.GetPaintedGuestOutputRectFromUIThread(); rect && rect->width) {
+      width = float(rect->width);
+    }
+    stereo_shift_ = width * 0.5f;
+  }
+#endif
   if (draining_) {
     // A second is plenty for a press to end; never hold the guest longer.
     constexpr auto kMaximumDrain = std::chrono::seconds(1);
@@ -1382,7 +1410,7 @@ void HostUi::DrawMenu(rex::ui::UIDrawContext& context) {
   if (auto rect = presenter_.GetPaintedGuestOutputRectFromUIThread()) {
     const Canvas saved = canvas_;
     canvas_ = Canvas{float(rect->x), float(rect->y), 1.0f};
-    dim(float(rect->width), float(rect->height));
+    dim(stereo_shift_ > 0.0f ? stereo_shift_ : float(rect->width), float(rect->height));
     canvas_ = saved;
   } else {
     dim(kTitleWidth, kTitleHeight);

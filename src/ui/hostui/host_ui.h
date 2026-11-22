@@ -147,6 +147,11 @@ class HostUi final : public rex::ui::UIDrawer, public rex::ui::WindowInputListen
     float scale = 1.0f;  // render-target pixels per title pixel
   };
 
+  // VR stereo (the Quest's fh1_vr_stereo): the guest output holds both
+  // eyes side by side, so the UI is laid out in the left half and every
+  // batch is drawn again this many pixels to the right; 0 without stereo.
+  float stereo_shift_ = 0.0f;
+
   struct Batch {
     std::vector<rex::ui::ImmediateVertex> vertices;
     std::vector<uint16_t> indices;
