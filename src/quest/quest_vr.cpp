@@ -22,6 +22,7 @@
 #include <SDL3/SDL.h>
 #include <rex/cvar.h>
 #include <rex/graphics/hud_offset.h>
+#include <rex/graphics/vr_scene.h>
 #include <rex/perf/counter.h>
 #include <rex/ui/surface_android.h>
 
@@ -134,6 +135,9 @@ constexpr const char* kVrHudSafeZone = "0.2";
 constexpr const char* kVrHudScale = "0.85";
 constexpr float kQuadDistanceM = 10.0f;     // mono picture: far, so the eyes rest
 constexpr int kShownLagFrames = 2;          // debug.fhvr.lagframes
+// The head view needs a frame with a 3D scene this recently (videos have
+// none); short gaps (a camera cut) keep it.
+constexpr int64_t kSceneHoldMs = 400;
 constexpr float kPoseLeadMs = 33.0f;        // debug.fhvr.lead
 
 // The picture's distance for the stereo pair (fh1_vr_stereo_convergence).
@@ -1007,8 +1011,10 @@ class QuestXr {
     return v;
   }
 
-  // Touch -> Xbox pad. Sticks, triggers and A/B/X/Y as on the pad; grips are
-  // the bumpers, stick clicks the stick buttons. Menu: Start on release,
+  // Touch -> Xbox pad. Sticks, triggers and A/B/X/Y as on the pad; the left
+  // grip is LB (the right grip sends nothing); the right stick's click
+  // is the camera (RB), the left stick's click the next radio station (d-pad
+  // right). Menu: Start on release,
   // Back (View) while held 0.5 s. Left grip held: the right stick is the
   // d-pad (and LB is not sent while it is used that way).
   void UpdateInput(XrTime time) {
@@ -1029,9 +1035,15 @@ class QuestXr {
     s.buttons[SDL_GAMEPAD_BUTTON_EAST] = Bool(actions_.b);
     s.buttons[SDL_GAMEPAD_BUTTON_WEST] = Bool(actions_.x);
     s.buttons[SDL_GAMEPAD_BUTTON_NORTH] = Bool(actions_.y);
-    s.buttons[SDL_GAMEPAD_BUTTON_LEFT_STICK] = Bool(actions_.lclick);
-    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_STICK] = Bool(actions_.rclick);
-    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = Float(actions_.rgrip) > 0.5f;
+    // The left stick's click is the next radio station (the game's d-pad
+    // right; FH1 has no horn and nothing else on the left stick's click).
+    const bool radio = Bool(actions_.lclick);
+    if (radio && !radio_down_) radio_frames_ = 6;  // at least a few game frames
+    radio_down_ = radio;
+    // The camera (the pad's RB) is the right stick's click only (owner's
+    // pick): the right grip changes nothing, so it never switches the view
+    // by accident.
+    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = Bool(actions_.rclick);
 
     const bool lgrip = Float(actions_.lgrip) > 0.5f;
     if (lgrip) {
@@ -1076,6 +1088,8 @@ class QuestXr {
 
     HandSteering(time, grips, l, r, s);
     UpdateRumble(time);
+    if (radio || radio_frames_ > 0) s.buttons[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = true;
+    if (radio_frames_ > 0) --radio_frames_;
     pad_.Publish(s);
   }
 
@@ -1261,15 +1275,13 @@ class QuestXr {
     }
 
     // The grips are the hands now: no LB/RB from them, no d-pad from the
-    // left grip. The camera (RB) moves to the right stick's click.
+    // left grip. The camera (RB) stays on the right stick's click.
     s.rx = r.x;
     s.ry = r.y;
     for (int b : {SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
                   SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
                   SDL_GAMEPAD_BUTTON_LEFT_SHOULDER})
       s.buttons[b] = false;
-    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_STICK];
-    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_STICK] = false;
     dpad_used_ = false;
     if (shift_up_frames_ > 0) {
       s.buttons[SDL_GAMEPAD_BUTTON_EAST] = true;  // B: shift up
@@ -1289,13 +1301,16 @@ class QuestXr {
   // (pad_rumble_strength); debug.fhvr.rumble scales it on top (0 = off).
   // Short ticks (shifting, grabbing, the switch's buzz) win while they play.
   void UpdateRumble(XrTime time) {
-    const float strength = std::clamp(PropertyFloat("debug.fhvr.rumble", 1.0f), 0.0f, 2.0f);
+    const float strength = std::clamp(PropertyFloat("debug.fhvr.rumble", 1.0f), 0.0f, 3.0f);
     const float low = float(g_rumble_low.load(std::memory_order_relaxed)) / 65535.0f;
     const float high = float(g_rumble_high.load(std::memory_order_relaxed)) / 65535.0f;
     for (int h = 0; h < 2; ++h) {
       if (time < haptic_until_[h]) continue;
       const float motor = hands_active_ && on_wheel_[h] ? std::max(low, high) : (h ? high : low);
-      const float amplitude = std::clamp(motor * strength, 0.0f, 1.0f);
+      // The Touch controllers' motors barely register the game's frequent
+      // small values (engine, kerbs): the square root lifts them (a quarter
+      // feels like half), while full hits stay full (owner: stronger).
+      const float amplitude = std::clamp(std::sqrt(motor) * strength, 0.0f, 1.0f);
       if (amplitude > 0.02f) {
         XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
         info.action = h ? actions_.rhaptic : actions_.lhaptic;
@@ -1430,7 +1445,13 @@ class QuestXr {
       XrPosef shown{};
       int64_t age = 0;
       bool head_active = false;
-      const bool head_view = placed_ && ShownHead(&shown, &age, &head_active) &&
+      // Only over a 3D scene: the game's videos (and loading screens) draw
+      // none, and stay on the fixed curved screen instead of moving with the
+      // head while the camera still reads it (owner's pick).
+      // debug.fhvr.scenegate 0 turns that off.
+      const bool scene = PropertyFloat("debug.fhvr.scenegate", 1.0f) == 0.0f ||
+                         rex::graphics::VrSceneDepthAgeMs() < kSceneHoldMs;
+      const bool head_view = placed_ && ShownHead(&shown, &age, &head_active) && scene &&
                              PropertyFloat("debug.fhvr.vr", 1.0f) != 0.0f;
       // The cameras take the headset's field of view only while the head
       // view is up, so chase cameras and menus keep the game's own.
@@ -1565,6 +1586,8 @@ class QuestXr {
   XrTime haptic_until_[2] = {};
   bool rumbling_[2] = {};
   bool menu_combo_ = false, combo_fired_ = false;
+  bool radio_down_ = false;
+  int radio_frames_ = 0;
   std::string screen_hud_safe_zone_, screen_hud_scale_;
   uint32_t tuning_tick_ = 0;
   std::string last_cvar_;
