@@ -1011,12 +1011,12 @@ class QuestXr {
     return v;
   }
 
-  // Touch -> Xbox pad. Sticks, triggers and A/B/X/Y as on the pad; the left
-  // grip is LB (the right grip sends nothing); the right stick's click
-  // is the camera (RB), the left stick's click the next radio station (d-pad
-  // right). Menu: Start on release,
-  // Back (View) while held 0.5 s. Left grip held: the right stick is the
-  // d-pad (and LB is not sent while it is used that way).
+  // Touch -> Xbox pad. Sticks, triggers and A/B/X/Y as on the pad. While
+  // driving (a scene on screen) the right grip shifts up (B) and the left
+  // grip down (X) (owner's pick); in menus they are LB/RB, the tabs. The
+  // right stick's click is the camera (RB). The left stick's click tapped is
+  // the next radio station (d-pad right); held, the right stick is the d-pad.
+  // Menu: Start on release, Back (View) while held 0.5 s.
   void UpdateInput(XrTime time) {
     XrActiveActionSet active{actions_.set, XR_NULL_PATH};
     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
@@ -1035,29 +1035,47 @@ class QuestXr {
     s.buttons[SDL_GAMEPAD_BUTTON_EAST] = Bool(actions_.b);
     s.buttons[SDL_GAMEPAD_BUTTON_WEST] = Bool(actions_.x);
     s.buttons[SDL_GAMEPAD_BUTTON_NORTH] = Bool(actions_.y);
-    // The left stick's click is the next radio station (the game's d-pad
-    // right; FH1 has no horn and nothing else on the left stick's click).
-    const bool radio = Bool(actions_.lclick);
-    if (radio && !radio_down_) radio_frames_ = 6;  // at least a few game frames
-    radio_down_ = radio;
-    // The camera (the pad's RB) is the right stick's click only (owner's
-    // pick): the right grip changes nothing, so it never switches the view
-    // by accident.
-    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = Bool(actions_.rclick);
-
-    const bool lgrip = Float(actions_.lgrip) > 0.5f;
-    if (lgrip) {
+    // The left stick's click: tapped, the next radio station (the game's
+    // d-pad right; FH1 has no horn and nothing else on it), sent on release;
+    // held, the right stick is the d-pad.
+    const bool lclick = Bool(actions_.lclick);
+    if (lclick) {
       if (std::fabs(r.x) > 0.5f || std::fabs(r.y) > 0.5f) dpad_used_ = true;
       s.buttons[SDL_GAMEPAD_BUTTON_DPAD_UP] = r.y > 0.5f;
       s.buttons[SDL_GAMEPAD_BUTTON_DPAD_DOWN] = r.y < -0.5f;
       s.buttons[SDL_GAMEPAD_BUTTON_DPAD_LEFT] = r.x < -0.5f;
       s.buttons[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = r.x > 0.5f;
-      s.buttons[SDL_GAMEPAD_BUTTON_LEFT_SHOULDER] = !dpad_used_;
     } else {
+      if (radio_down_ && !dpad_used_) radio_frames_ = 6;  // a few game frames
       dpad_used_ = false;
       s.rx = r.x;
       s.ry = r.y;
     }
+    radio_down_ = lclick;
+    // The camera (the pad's RB) is the right stick's click.
+    s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = Bool(actions_.rclick);
+
+    // The grips: gears while driving (not while they are the hands of the
+    // hand steering), the menus' tabs otherwise.
+    const bool lgrip = Float(actions_.lgrip) > 0.5f;
+    const bool rgrip = Float(actions_.rgrip) > 0.5f;
+    const bool hands = REXCVAR_GET(vr_hand_steering) && head_view_shown_ && placed_;
+    const bool driving = rex::graphics::VrSceneDepthAgeMs() < kSceneHoldMs;
+    if (!hands && driving) {
+      if (rgrip && !rgrip_down_) {
+        grip_up_frames_ = kShiftFrames;
+        Pulse(1, 0.6f, 0.03f, time);
+      }
+      if (lgrip && !lgrip_down_) {
+        grip_down_frames_ = kShiftFrames;
+        Pulse(0, 0.6f, 0.03f, time);
+      }
+    } else if (!hands) {
+      s.buttons[SDL_GAMEPAD_BUTTON_LEFT_SHOULDER] = lgrip;
+      s.buttons[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] |= rgrip;
+    }
+    lgrip_down_ = lgrip;
+    rgrip_down_ = rgrip;
 
     // Menu: a short press is Start (sent for a few frames after release),
     // holding it is Back. Pressed while both grips are held, it is the hand
@@ -1088,8 +1106,18 @@ class QuestXr {
 
     HandSteering(time, grips, l, r, s);
     UpdateRumble(time);
-    if (radio || radio_frames_ > 0) s.buttons[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = true;
-    if (radio_frames_ > 0) --radio_frames_;
+    if (radio_frames_ > 0) {
+      s.buttons[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = true;
+      --radio_frames_;
+    }
+    if (grip_up_frames_ > 0) {
+      s.buttons[SDL_GAMEPAD_BUTTON_EAST] = true;  // B: shift up
+      --grip_up_frames_;
+    }
+    if (grip_down_frames_ > 0) {
+      s.buttons[SDL_GAMEPAD_BUTTON_WEST] = true;  // X: shift down
+      --grip_down_frames_;
+    }
     pad_.Publish(s);
   }
 
@@ -1588,6 +1616,9 @@ class QuestXr {
   bool menu_combo_ = false, combo_fired_ = false;
   bool radio_down_ = false;
   int radio_frames_ = 0;
+  // Gears on the grips (UpdateInput).
+  bool lgrip_down_ = false, rgrip_down_ = false;
+  int grip_up_frames_ = 0, grip_down_frames_ = 0;
   std::string screen_hud_safe_zone_, screen_hud_scale_;
   uint32_t tuning_tick_ = 0;
   std::string last_cvar_;
