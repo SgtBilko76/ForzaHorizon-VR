@@ -74,11 +74,19 @@ not needed for the menus' LB/RB tabs:
   sequential lever: push forward 5 cm to shift up (the pad's B), pull back to
   shift down (X), then back to the middle. The hand ticks when it reaches the
   lever.
-- The game's pad rumble (bumps, kerbs, impacts, engine) plays on the hands
-  that hold the wheel (`debug.fhvr.rumble` scales it); Touch controllers have
-  no motor to push back like a wheel's force feedback.
+- A hand on the wheel feels both of the game's rumble motors; Touch
+  controllers have no motor to push back like a wheel's force feedback.
 - With the grips taken, the camera button (RB) moves to the right stick's
   click; LB (clutch) and the left grip's d-pad are not available.
+
+## Controller vibration
+
+The game's Xbox pad rumble reaches the virtual pad's `Rumble` callback
+(already scaled by the SETTINGS screen's RUMBLE, `pad_rumble_strength`) and
+plays on the Touch controllers every frame through `xrApplyHapticFeedback`
+(`UpdateRumble` in `quest_vr.cpp`): the heavy left motor on the left
+controller, the light right motor on the right one, both on a hand that
+holds the wheel. `debug.fhvr.rumble` scales it on top (0 = off, up to 2).
 
 ## Meta Quest and PICO
 

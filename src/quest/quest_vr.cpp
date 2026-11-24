@@ -186,9 +186,9 @@ struct HeadShared {
 // turns it, ±90 degrees for full lock (owner's pick), and the wheel only
 // follows the hands from where they took it. A grip pressed beside the right
 // knee takes a sequential gear lever instead: push forward to shift up (the
-// pad's B), pull back to shift down (X), then back to the middle. The game's
-// rumble plays on the hands that hold the wheel. Menu + both grips held for
-// kHandSteeringToggleHold switches it on and off anywhere.
+// pad's B), pull back to shift down (X), then back to the middle. A hand on
+// the wheel feels both of the game's rumble motors (UpdateRumble). Menu +
+// both grips held for kHandSteeringToggleHold switches it on and off.
 constexpr float kWheelFullLockRad = 90.0f / 57.2957795f;
 constexpr float kWheelRadiusGuessM = 0.18f;  // before both hands held it once
 constexpr float kWheelMinRadiusM = 0.05f;    // a hand closer to the centre turns nothing
@@ -328,6 +328,10 @@ class VirtualPad {
     desc.Rumble = [](void*, Uint16 low, Uint16 high) -> bool {
       g_rumble_low.store(low, std::memory_order_relaxed);
       g_rumble_high.store(high, std::memory_order_relaxed);
+      static std::atomic<bool> logged{false};
+      if ((low || high) && !logged.exchange(true))
+        VR_LOG("rumble: the game's first vibration (%u, %u) goes to the controllers", unsigned(low),
+               unsigned(high));
       return true;
     };
     const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
@@ -1071,6 +1075,7 @@ class QuestXr {
     if (start_frames_ > 0) --start_frames_;
 
     HandSteering(time, grips, l, r, s);
+    UpdateRumble(time);
     pad_.Publish(s);
   }
 
@@ -1125,10 +1130,7 @@ class QuestXr {
     const bool active = REXCVAR_GET(vr_hand_steering) && head_view_shown_ && placed_;
     if (!active) {
       if (hands_active_) {
-        for (int h = 0; h < 2; ++h) {
-          on_wheel_[h] = false;
-          if (rumbling_[h]) StopHaptics(h);
-        }
+        for (int h = 0; h < 2; ++h) on_wheel_[h] = false;
         lever_held_ = false;
         wheel_hand_set_ = 0;
         wheel_angle_ = 0.0f;
@@ -1277,19 +1279,24 @@ class QuestXr {
       s.buttons[SDL_GAMEPAD_BUTTON_WEST] = true;  // X: shift down
       --shift_down_frames_;
     }
+  }
 
-    // The game's rumble on the hands that hold the wheel (the controllers
-    // cannot push back like a wheel's motor; bumps, kerbs, impacts and the
-    // engine come through). Shift and grab ticks win while they play.
+  // The game's Xbox pad rumble on the Touch controllers, always (menus,
+  // curved screen and head view alike): the pad's left, heavy motor on the
+  // left controller and its right, light motor on the right one. With hand
+  // steering, a hand on the wheel feels both, as a wheel rim would. The
+  // SETTINGS screen's RUMBLE strength is applied before it gets here
+  // (pad_rumble_strength); debug.fhvr.rumble scales it on top (0 = off).
+  // Short ticks (shifting, grabbing, the switch's buzz) win while they play.
+  void UpdateRumble(XrTime time) {
     const float strength = std::clamp(PropertyFloat("debug.fhvr.rumble", 1.0f), 0.0f, 2.0f);
-    const float amplitude =
-        std::clamp(float(std::max(g_rumble_low.load(std::memory_order_relaxed),
-                                  g_rumble_high.load(std::memory_order_relaxed))) /
-                       65535.0f * strength,
-                   0.0f, 1.0f);
+    const float low = float(g_rumble_low.load(std::memory_order_relaxed)) / 65535.0f;
+    const float high = float(g_rumble_high.load(std::memory_order_relaxed)) / 65535.0f;
     for (int h = 0; h < 2; ++h) {
       if (time < haptic_until_[h]) continue;
-      if (on_wheel_[h] && amplitude > 0.02f) {
+      const float motor = hands_active_ && on_wheel_[h] ? std::max(low, high) : (h ? high : low);
+      const float amplitude = std::clamp(motor * strength, 0.0f, 1.0f);
+      if (amplitude > 0.02f) {
         XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
         info.action = h ? actions_.rhaptic : actions_.lhaptic;
         XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
